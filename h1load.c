@@ -83,6 +83,8 @@ struct errmsg {
 #define CF_POLW 0x00000004    // subscribed to polling for writing
 #define CF_POLR 0x00000008    // subscribed to polling for reading
 #define CF_ERR  0x00000010    // I/O error reported
+#define CF_HEAD 0x00000020    // a HEAD request was last sent
+#define CF_V11  0x00000040    // HTTP/1.1 used for the response
 
 /* connection states */
 enum cstate {
@@ -101,6 +103,7 @@ struct conn {
 	uint32_t flags;              // CF_*
 	enum cstate state;           // CS_*
 	int fd;                      // associated FD
+	uint64_t to_recv;            // bytes left to receive; 0=headers; ~0=unlimited
 	uint64_t tot_req;            // total requests on this connection
 	uint64_t tot_sent;           // total bytes sent on this connection
 	uint64_t tot_rcvd;           // total bytes received on this connection
@@ -123,6 +126,7 @@ struct thread {
 	uint64_t tot_serr;           // total socket errors on this thread
 	uint64_t tot_cerr;           // total connection errors on this thread
 	uint64_t tot_xerr;           // total xfer errors on this thread
+	uint64_t tot_perr;           // total protocol errors on this thread
 	uint64_t tot_cto;            // total connection timeouts on this thread
 	uint64_t tot_xto;            // total xfer timeouts on this thread
 	int epollfd;                 // poller's FD
@@ -369,10 +373,151 @@ struct conn *add_connection(struct thread *t)
 	return NULL;
 }
 
+/* parse HTTP response in <buf> of len <len>. Returns <0 on error */
+int parse_resp(struct conn *conn, char *buf, int len)
+{
+	int ver;
+	int status;
+	uint64_t cl = 0;
+	int do_close = 0, do_te = 0;
+	char *p, *hdr, *col, *eol, *end;
+
+	if (len < 13)
+		goto too_short;
+
+	if (memcmp(buf, "HTTP/1.", 7) != 0)
+		return -1;
+
+	ver = buf[7] - '0';
+	if (ver < 0 || ver > 1)
+		return -1;
+	if (ver > 0)
+		conn->flags |= CF_V11;
+	do_close = !ver;
+
+	if (buf[8] != ' ')
+		return -1;
+
+	if (buf[12] != ' ' && buf[12] != '\r' && buf[12] != '\n')
+		return -1;
+
+	status = buf[9] * 100 + buf[10] * 10 + buf[11] - '0' * 111;
+	if (status < 100 || status > 599)
+		return -1;
+
+	end = buf + len;
+	p = buf + 13;
+
+	while (1) {
+		while (1) {
+			if (p == end)
+				goto too_short;
+			if (*p == '\n')
+				break;
+			p++;
+		}
+
+		hdr = ++p;
+		while (1) {
+			if (p == end)
+				goto too_short;
+			if (*p == ':' || *p == '\n')
+				break;
+			p++;
+		}
+
+		if (*hdr == '\n' || (p > hdr && *hdr == '\r' && hdr[1] == '\n')) {
+			/* EOH */
+			p++;
+			break;
+		}
+
+		/* '\n' without ':' => error */
+		if (*p != ':')
+			return -1;
+
+		col = p;
+		while (1) {
+			if (p == end)
+				goto too_short;
+			if (*p == '\r' || *p == '\n')
+				break;
+			p++;
+		}
+		eol = p;
+
+		/* now we have the header name between <hdr> and <col>, and the
+		 * value between <col>+1 and <eol>.
+		 */
+
+		/* 1/ connection: close or keep-alive */
+		if (col - hdr == 10 && strncasecmp(hdr, "connection", 10) == 0) {
+			for (p = col + 1; p < eol - 5; p++) {
+				int l = eol - p;
+
+				l = eol - p < 10 ? eol - p : 10;
+				if (*p == 'k' && strncasecmp(p, "keep-alive", l) == 0) {
+					do_close = 0;
+					p += l;
+					continue;
+				}
+
+				l = eol - p < 5 ? eol - p : 5;
+				if (*p == 'c' && strncasecmp(p, "close", l) == 0) {
+					do_close = 1;
+					p += l;
+					continue;
+				}
+			}
+		}
+
+		/* 2/ transfer-encoding (just check for presence) */
+		if (col - hdr == 17 && strncasecmp(hdr, "transfer-encoding", 17) == 0) {
+			do_te = 1;
+		}
+
+		if (col - hdr == 14 && !do_te && status != 204 &&
+		    status != 304 && strncasecmp(hdr, "content-length", 14) == 0) {
+			unsigned char k;
+			cl = 0;
+			for (p = col + 1; p < eol && *p == ' '; p++)
+				;
+
+			while (p < eol) {
+				k = *(p++) - '0';
+				if (k > 9)
+					break;
+				cl = cl * 10 + k;
+			}
+		}
+	}
+
+	/* so now we have do_te set if transfer-encoding must be used, cl equal
+	 * to the last content-length header parsed, do_close indicating the
+	 * desired connection mode, status set to the HTTP status, ver set to
+	 * the version (0 or 1). We just have to set the amount of bytes left
+	 * to receive. 0=we already have everything. -1=receive till close.
+	 * For other cases we deduce what we already have in the buffer.
+	 */
+	if (conn->flags & CF_HEAD || status == 204 || status == 304)
+		conn->to_recv = 0;
+	else if (do_te)
+		conn->to_recv = -1; // TE: tunnel for now
+	else if (do_close)
+		conn->to_recv = -1; // close: tunnel
+	else
+		conn->to_recv = cl - (end - p);
+	return 0;
+
+ too_short:
+	return -1;
+}
+
 /* handles I/O and timeouts for connection <conn> on thread <t> */
 void handle_conn(struct thread *t, struct conn *conn)
 {
 	int expired = tv_isset(conn->expire) && tv_cmp(conn->expire, t->now) <= 0;
+	int loops;
 	int ret;
 
 	if (conn->state == CS_CON) {
@@ -395,6 +540,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 	}
 
 	if (conn->state == CS_SND) {
+	send_again:
 		if (conn->flags & CF_ERR) {
 			t->tot_xerr++;
 			goto kill_conn;
@@ -409,8 +555,12 @@ void handle_conn(struct thread *t, struct conn *conn)
 			goto wait_io;
 		}
 
+		conn->flags &= ~(CF_HEAD | CF_V11);
+		conn->to_recv = 0; // wait for headers
+
 		/* finally ready, let's try (again?) */
-		ret = send(conn->fd, "HEAD / HTTP/1.0\r\n\r\n", 19, MSG_NOSIGNAL | MSG_DONTWAIT);
+		//ret = send(conn->fd, "HEAD / HTTP/1.0\r\n\r\n", 19, MSG_NOSIGNAL | MSG_DONTWAIT);
+		ret = send(conn->fd, "GET /?s=250m HTTP/1.1\r\n\r\n", 25, MSG_NOSIGNAL | MSG_DONTWAIT);
 		if (ret < 0) {
 			if (errno == EAGAIN) {
 				cant_send(conn);
@@ -444,7 +594,11 @@ void handle_conn(struct thread *t, struct conn *conn)
 		}
 
 		/* finally ready, let's try (again?) */
-		do {
+		if (conn->to_recv == 0) {
+			/* Headers expected. For now we assume we get all of them
+			 * at once. Later we may use a temp buffer to store partial
+			 * contents when that happens.
+			 */
 			ret = recv(conn->fd, buf, sizeof(buf), MSG_NOSIGNAL | MSG_DONTWAIT);
 			if (ret < 0) {
 				if (errno == EAGAIN) {
@@ -456,12 +610,61 @@ void handle_conn(struct thread *t, struct conn *conn)
 			}
 
 			t->tot_rcvd += ret;
-		} while (ret > 0);
+			if (parse_resp(conn, buf, ret) < 0) {
+				t->tot_perr++;
+				goto kill_conn;
+			}
+		}
+
+		loops = 3;
+		while (conn->to_recv) {
+			uint64_t try = conn->to_recv;
+			void *ptr = buf;
+
+			if (loops-- == 0) {
+				cant_recv(conn);
+				goto wait_io;
+			}
+
+			if (MSG_TRUNC) {
+				if (try > 1 << 30)
+					try = 1 << 30;
+				ptr = NULL;
+			}
+			else if (try == ~0 || try > sizeof(buf))
+				try = sizeof(buf);
+
+			ret = recv(conn->fd, ptr, try, MSG_NOSIGNAL | MSG_DONTWAIT | MSG_TRUNC);
+			if (ret <= 0) {
+				if (ret == 0) {
+					/* received a shutdown, might be OK */
+					if (conn->to_recv != ~0)
+						t->tot_xerr++;
+					conn->state = CS_END;
+					goto kill_conn;
+				}
+
+				if (errno == EAGAIN) {
+					cant_recv(conn);
+					goto wait_io;
+				}
+				t->tot_xerr++;
+				goto kill_conn;
+			}
+
+			t->tot_rcvd += ret;
+			if (conn->to_recv != ~0)
+				conn->to_recv -= ret;
+		}
+
+		/* we've reached the end */
 
 		//if (arg_thnk)
 		//	conn->state = CS_THK;
 		//else
-		conn->state = CS_END;
+		conn->state = CS_SND;
+		stop_recv(conn);
+		goto send_again;
 	}
 
 
