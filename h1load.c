@@ -669,14 +669,57 @@ void handle_conn(struct thread *t, struct conn *conn)
 
 		/* we've reached the end */
 
-		//if (arg_thnk)
-		//	conn->state = CS_THK;
-		//else
-		conn->state = CS_SND;
-		stop_recv(conn);
-		goto send_again;
+		if (arg_thnk) {
+			conn->expire = tv_ms_add(t->now, arg_thnk);
+			LIST_DELETE(&conn->link);
+			LIST_APPEND(&t->sq, &conn->link);
+			conn->state = CS_THK;
+		}
+		else {
+			conn->state = CS_SND;
+			stop_recv(conn);
+			goto send_again;
+		}
 	}
 
+	if (conn->state == CS_THK) {
+		/* continue to monitor the server connection for a possible
+		 * close, and wait for the timeout.
+		 */
+		uint64_t try = 1 << 30;
+		void *ptr = buf;
+
+		try = 1 << 30;
+		if (MSG_TRUNC) {
+			ptr = NULL;
+		}
+		else if (try > sizeof(buf))
+			try = sizeof(buf);
+
+		ret = recv(conn->fd, ptr, try, MSG_NOSIGNAL | MSG_DONTWAIT | MSG_TRUNC);
+		if (ret <= 0) {
+			if (ret == 0) {
+				/* received a shutdown */
+				conn->state = CS_END;
+				goto kill_conn;
+			}
+
+			if (errno != EAGAIN)
+				goto kill_conn;
+		}
+
+		if (expired) {
+			LIST_DELETE(&conn->link);
+			LIST_APPEND(&t->wq, &conn->link);
+			conn->expire = tv_ms_add(t->now, arg_wait);
+			conn->state = CS_SND;
+			stop_recv(conn);
+			goto send_again;
+		}
+
+		cant_recv(conn);
+		goto done;
+	}
 
 	if (conn->state == CS_END) {
 		/* it was a close */
