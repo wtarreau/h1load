@@ -457,18 +457,18 @@ int parse_resp(struct conn *conn, char *buf, int len)
 
 		/* 1/ connection: close or keep-alive */
 		if (col - hdr == 10 && strncasecmp(hdr, "connection", 10) == 0) {
-			for (p = col + 1; p < eol - 5; p++) {
+			for (p = col + 1; p <= eol - 5; p++) {
 				int l = eol - p;
 
 				l = eol - p < 10 ? eol - p : 10;
-				if (*p == 'k' && strncasecmp(p, "keep-alive", l) == 0) {
+				if ((*p == 'k' || *p == 'K') && strncasecmp(p, "keep-alive", l) == 0) {
 					do_close = 0;
 					p += l;
 					continue;
 				}
 
 				l = eol - p < 5 ? eol - p : 5;
-				if (*p == 'c' && strncasecmp(p, "close", l) == 0) {
+				if ((*p == 'c' || *p == 'C') && strncasecmp(p, "close", l) == 0) {
 					do_close = 1;
 					p += l;
 					continue;
