@@ -504,12 +504,12 @@ int parse_resp(struct conn *conn, char *buf, int len)
 	 * to receive. 0=we already have everything. -1=receive till close.
 	 * For other cases we deduce what we already have in the buffer.
 	 */
-	if (conn->flags & CF_HEAD || status == 204 || status == 304)
+	if (do_close)
+		conn->to_recv = -1; // close: tunnel
+	else if (conn->flags & CF_HEAD || status == 204 || status == 304)
 		conn->to_recv = 0;
 	else if (do_te)
 		conn->to_recv = -1; // TE: tunnel for now
-	else if (do_close)
-		conn->to_recv = -1; // close: tunnel
 	else
 		conn->to_recv = cl - (end - p);
 	return 0;
