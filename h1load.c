@@ -241,18 +241,18 @@ static inline struct timeval tv_ms_add(const struct timeval from, unsigned int m
 /************ connection management **************/
 
 /* updates polling on epoll FD <ep> for fd <fd> supposed to match connection
- * flags <old> with new flags <new>.
+ * flags <flags>.
  */
-void update_poll(int ep, int fd, uint32_t old, uint32_t new, void *ptr)
+void update_poll(int ep, int fd, uint32_t flags, void *ptr)
 {
 	struct epoll_event ev;
 	int op;
 
 	ev.data.ptr = ptr;
-	ev.events = ((new & CF_POLW) ? EPOLLOUT : 0) | ((new & CF_POLR) ? EPOLLIN : 0);
-	if (!(old & (CF_POLR | CF_POLW)))
+	ev.events = ((flags & CF_BLKW) ? EPOLLOUT : 0) | ((flags & CF_BLKR) ? EPOLLIN : 0);
+	if (!(flags & (CF_POLR | CF_POLW)))
 		op = EPOLL_CTL_ADD;
-	else if (!(new & (CF_POLR | CF_POLW)))
+	else if (!(flags & (CF_POLR | CF_POLW)))
 		op = EPOLL_CTL_DEL;
 	else
 		op = EPOLL_CTL_MOD;
@@ -261,45 +261,38 @@ void update_poll(int ep, int fd, uint32_t old, uint32_t new, void *ptr)
 }
 
 /* update epoll_fd <ep> for conn <conn>, adding flag <add> and removing <del> */
-static inline void update_conn(int ep, struct conn *conn, uint32_t add, uint32_t del)
+static inline void update_conn(int ep, struct conn *conn)
 {
-	uint32_t flags = (conn->flags | add) & ~del;
+	uint32_t flags = conn->flags;
 
-	if ((flags ^ conn->flags) & (CF_POLR | CF_POLW))
-		update_poll(ep, conn->fd, conn->flags, flags, conn);
-	conn->flags = flags;
+	if ((!(flags & CF_BLKW) ^ !(flags & CF_POLW)) |
+	    (!(flags & CF_BLKR) ^ !(flags & CF_POLR))) {
+		update_poll(ep, conn->fd, flags, conn);
+		if (conn->flags & CF_BLKW)
+			conn->flags |= CF_POLW;
+		if (conn->flags & CF_BLKR)
+			conn->flags |= CF_POLR;
+	}
 }
 
 static inline void cant_send(struct conn *conn)
 {
 	conn->flags |= CF_BLKW;
-	if (conn->flags & CF_POLW)
-		return;
-	update_conn(thr->epollfd, conn, CF_POLW, 0);
 }
 
 static inline void cant_recv(struct conn *conn)
 {
 	conn->flags |= CF_BLKR;
-	if (conn->flags & CF_POLR)
-		return;
-	update_conn(thr->epollfd, conn, CF_POLR, 0);
 }
 
 static inline void stop_send(struct conn *conn)
 {
 	conn->flags &= ~CF_BLKW;
-	if (!(conn->flags & CF_POLW))
-		return;
-	update_conn(thr->epollfd, conn, 0, CF_POLW);
 }
 
 static inline void stop_recv(struct conn *conn)
 {
 	conn->flags &= ~CF_BLKR;
-	if (!(conn->flags & CF_POLR))
-		return;
-	update_conn(thr->epollfd, conn, 0, CF_POLR);
 }
 
 static inline void may_send(struct conn *conn)
@@ -354,9 +347,8 @@ struct conn *add_connection(struct thread *t)
 	if (connect(conn->fd, (struct sockaddr *)&t->dst, sizeof(t->dst)) < 0) {
 		if (errno != EINPROGRESS)
 			goto fail_setup;
-		conn->state = CS_CON;
 		cant_send(conn);
-		//conn->expire = tv_ms_add(t->now, arg_wait);
+		conn->state = CS_CON;
 		LIST_APPEND(&t->wq, &conn->link);
 	}
 	else {
@@ -477,16 +469,15 @@ void handle_conn(struct thread *t, struct conn *conn)
 		/* it was a close */
 		goto kill_conn;
 	}
+	goto done;
 
-
- done:
-	update_conn(thr->epollfd, conn, 0, 0);
-	return;
 
  wait_io:
 	conn->expire = tv_ms_add(t->now, arg_wait);
 	LIST_DELETE(&conn->link);
 	LIST_APPEND(&t->wq, &conn->link);
+ done:
+	update_conn(thr->epollfd, conn);
 	return;
 
  kill_conn:
