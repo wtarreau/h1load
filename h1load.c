@@ -85,6 +85,7 @@ struct errmsg {
 #define CF_ERR  0x00000010    // I/O error reported
 #define CF_HEAD 0x00000020    // a HEAD request was last sent
 #define CF_V11  0x00000040    // HTTP/1.1 used for the response
+#define CF_EXP  0x00000080    // task expired in a wait queue
 
 /* connection states */
 enum cstate {
@@ -358,7 +359,7 @@ struct conn *add_connection(struct thread *t)
 			goto fail_setup;
 		cant_send(conn);
 		conn->state = CS_CON;
-		LIST_APPEND(&t->wq, &conn->link);
+		LIST_APPEND(&t->iq, &conn->link);
 	}
 	else {
 		conn->state = CS_SND;
@@ -521,7 +522,7 @@ int parse_resp(struct conn *conn, char *buf, int len)
 /* handles I/O and timeouts for connection <conn> on thread <t> */
 void handle_conn(struct thread *t, struct conn *conn)
 {
-	int expired = tv_isset(conn->expire) && tv_cmp(conn->expire, t->now) <= 0;
+	int expired = !!(conn->flags & CF_EXP);
 	int loops;
 	int ret;
 
@@ -560,7 +561,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 			goto wait_io;
 		}
 
-		conn->flags &= ~(CF_HEAD | CF_V11);
+		conn->flags &= ~(CF_HEAD | CF_V11 | CF_EXP);
 		conn->to_recv = 0; // wait for headers
 		t->tot_req++;
 
@@ -699,11 +700,29 @@ void handle_conn(struct thread *t, struct conn *conn)
 	free(conn);
 }
 
+/* returns the delay till the next event, or zero if none */
+unsigned long check_timeouts(struct thread *t, struct list *list)
+{
+	struct conn *conn;
+	unsigned long remain;
+
+	while (!LIST_ISEMPTY(list)) {
+		conn = LIST_NEXT(list, typeof(conn), link);
+		remain = tv_ms_remain(t->now, conn->expire);
+		if (remain)
+			return remain;
+		conn->flags |= CF_EXP;
+		handle_conn(t, conn);
+	}
+	return 0;
+}
+
 void work(void *arg)
 {
 	struct thread *thread = (struct thread *)arg;
 	struct conn *conn;
 	int nbev, i;
+	unsigned long t1, t2;
 
 	thr = thread;
 
@@ -721,7 +740,19 @@ void work(void *arg)
 			handle_conn(thr, conn);
 		}
 
-		nbev = epoll_wait(thr->epollfd, thr->events, pollevents, 100);
+		t1 = 1000; // one call per second
+		t2 = check_timeouts(thr, &thr->wq);
+
+		if (t2 && t2 < t1)
+			t1 = t2;
+		t2 = check_timeouts(thr, &thr->sq);
+		if (t2 && t2 < t1)
+			t1 = t2;
+
+		if (thr->curconn < thr->maxconn)
+			t1 = 0;
+
+		nbev = epoll_wait(thr->epollfd, thr->events, pollevents, t1);
 		gettimeofday(&thr->now, NULL);
 
 		for (i = 0; i < nbev; i++) {
