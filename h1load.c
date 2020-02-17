@@ -562,6 +562,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 
 		conn->flags &= ~(CF_HEAD | CF_V11);
 		conn->to_recv = 0; // wait for headers
+		t->tot_req++;
 
 		/* check for HEAD */
 		if (*(uint32_t *)t->req == ntohl(0x48454144))
