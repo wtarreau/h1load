@@ -130,6 +130,8 @@ struct thread {
 	uint64_t tot_cto;            // total connection timeouts on this thread
 	uint64_t tot_xto;            // total xfer timeouts on this thread
 	int epollfd;                 // poller's FD
+	char *req;                   // copy of the full request to be sent
+	int req_len;                 // request's length
 	struct timeval start_date;   // thread's start date
 	int tid;                     // thread number
 	pthread_t pth;               // the pthread descriptor
@@ -155,6 +157,7 @@ int arg_thrd = 1;     // number of threads
 int arg_wait = 10000; // I/O time out (ms)
 int arg_verb = 0;     // verbosity
 int arg_fast = 0;     // merge send with connect's ACK
+int arg_head = 0;     // use HEAD
 char *arg_url;
 
 /* global state */
@@ -558,9 +561,12 @@ void handle_conn(struct thread *t, struct conn *conn)
 		conn->flags &= ~(CF_HEAD | CF_V11);
 		conn->to_recv = 0; // wait for headers
 
+		/* check for HEAD */
+		if (*(uint32_t *)t->req == ntohl(0x48454144))
+			conn->flags |= CF_HEAD;
+
 		/* finally ready, let's try (again?) */
-		//ret = send(conn->fd, "HEAD / HTTP/1.0\r\n\r\n", 19, MSG_NOSIGNAL | MSG_DONTWAIT);
-		ret = send(conn->fd, "GET /?s=250m HTTP/1.1\r\n\r\n", 25, MSG_NOSIGNAL | MSG_DONTWAIT);
+		ret = send(conn->fd, t->req, t->req_len, MSG_NOSIGNAL | MSG_DONTWAIT);
 		if (ret < 0) {
 			if (errno == EAGAIN) {
 				cant_send(conn);
@@ -766,6 +772,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -w <time>     I/O timeout in milliseconds (-1)\n"
 	    "  -T <time>     think time after a response (0)\n"
 	    "  -F	     merge send() with connect's ACK\n"
+	    "  -I	     use HEAD instead of GET\n"
 	    "  -h	     display this help\n"
 	    "  -v	     increase verbosity\n"
 	    "\n"
@@ -822,7 +829,9 @@ int addr_to_ss(char *str, struct sockaddr_storage *ss, struct errmsg *err)
 	return 0;
 }
 
-/* creates and initializes thread <th>, returns <0 on failure */
+/* creates and initializes thread <th>, returns <0 on failure. The initial
+ * request is supposed to still be in <buf>.
+ */
 int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss)
 {
 	if (th > MAXTHREADS) {
@@ -841,9 +850,16 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss)
 	threads[th].tid = th;
 	threads[th].events = calloc(1, sizeof(*threads[th].events) * pollevents);
 	if (!threads[th].events) {
-		err->len = snprintf(err->msg, err->size, "Failed to allocate %d poll_events ofr thread %d\n", pollevents, th);
+		err->len = snprintf(err->msg, err->size, "Failed to allocate %d poll_events for thread %d\n", pollevents, th);
 		return -1;
 	}
+
+	threads[th].req = strdup(buf);
+	if (!threads[th].req) {
+		err->len = snprintf(err->msg, err->size, "Failed to allocate request for thread %d\n", th);
+		return -1;
+	}
+	threads[th].req_len = strlen(threads[th].req);
 
 	threads[th].epollfd = epoll_create(1);
 	if (threads[th].epollfd < 0) {
@@ -863,6 +879,7 @@ int main(int argc, char **argv)
 	const char *name = argv[0];
 	struct sockaddr_storage ss;
 	struct errmsg err = { .len = 0, .size = 100, .msg = alloca(100) };
+	char *host;
 	char c;
 	int th;
 
@@ -911,6 +928,8 @@ int main(int argc, char **argv)
 		}
 		else if (strcmp(argv[0], "-F") == 0)
 			arg_fast = 1;
+		else if (strcmp(argv[0], "-I") == 0)
+			arg_head = 1;
 		else if (strcmp(argv[0], "-v") == 0)
 			arg_verb++;
 		else if (strcmp(argv[0], "-h") == 0)
@@ -937,13 +956,21 @@ int main(int argc, char **argv)
 		*arg_url = 0;
 	}
 
-	if (addr_to_ss(*argv, &ss, &err) < 0)
-		die(1, err.msg);
+	host = strdup(*argv);
 
 	if (arg_url)
 		*arg_url = c;
 	else
 		arg_url = "/";
+
+	/* prepare the request that will be duplicated */
+	snprintf(buf, sizeof(buf),
+	         "%s %s HTTP/1.1\r\nHost: %s\r\n\r\n",
+	         arg_head ? "HEAD" : "GET",
+	         arg_url, host);
+
+	if (addr_to_ss(host, &ss, &err) < 0)
+		die(1, err.msg);
 
 	for (th = 0; th < arg_thrd; th++) {
 		if (create_thread(th, &err, &ss) < 0) {
