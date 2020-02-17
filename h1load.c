@@ -158,12 +158,14 @@ int arg_wait = 10000; // I/O time out (ms)
 int arg_verb = 0;     // verbosity
 int arg_fast = 0;     // merge send with connect's ACK
 int arg_head = 0;     // use HEAD
+int arg_dura = 0;     // test duration in sec if non-nul
 char *arg_url;
 
 /* global state */
 #define THR_STOP_ALL 0x80000000
 volatile uint32_t running = 0; // # = running threads, b31 set = must stop now!
 struct thread threads[MAXTHREADS];
+struct timeval start_date, stop_date, now;
 
 /* current thread */
 __thread struct thread *thr;
@@ -765,16 +767,17 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "Usage: %s [option]* URL\n"
 	    "\n"
 	    "The following arguments are supported :\n"
+	    "  -d <time>     test duration in seconds (0)\n"
 	    "  -c <conn>     concurrent connections (1)\n"
 	    "  -n <reqs>     maximum total requests (-1)\n"
 	    "  -r <reqs>     number of requests per connection (-1)\n"
 	    "  -t <threads>  number of threads to create (1)\n"
 	    "  -w <time>     I/O timeout in milliseconds (-1)\n"
 	    "  -T <time>     think time after a response (0)\n"
-	    "  -F	     merge send() with connect's ACK\n"
-	    "  -I	     use HEAD instead of GET\n"
-	    "  -h	     display this help\n"
-	    "  -v	     increase verbosity\n"
+	    "  -F            merge send() with connect's ACK\n"
+	    "  -I            use HEAD instead of GET\n"
+	    "  -h            display this help\n"
+	    "  -v            increase verbosity\n"
 	    "\n"
 	    ,name);
 }
@@ -874,6 +877,29 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss)
 	return 0;
 }
 
+/* reports current date (now) and aggragated stats */
+void summary()
+{
+	int th;
+	uint64_t cur_conn, tot_conn, tot_req, tot_err, tot_rcvd;
+
+	cur_conn = tot_conn = tot_req = tot_err = tot_rcvd = 0;
+	for (th = 0; th < arg_thrd; th++) {
+		cur_conn += threads[th].curconn;
+		tot_conn += threads[th].tot_conn;
+		tot_req  += threads[th].tot_req;
+		tot_err  += threads[th].tot_serr + threads[th].tot_cerr + threads[th].tot_xerr + threads[th].tot_perr;
+		tot_rcvd += threads[th].tot_rcvd;
+	}
+	printf("%9lu %5lu %8llu %8llu %14llu %6lu\n",
+	       (unsigned long)now.tv_sec,
+	       (unsigned long)cur_conn,
+	       (unsigned long long)tot_conn,
+	       (unsigned long long)tot_req,
+	       (unsigned long long)tot_rcvd,
+	       (unsigned long)tot_err);
+}
+
 int main(int argc, char **argv)
 {
 	const char *name = argv[0];
@@ -924,6 +950,12 @@ int main(int argc, char **argv)
 			if (argc < 2)
 				usage(name, 1);
 			arg_thnk = atoi(argv[1]);
+			argv++; argc--;
+		}
+		else if (strcmp(argv[0], "-d") == 0) {
+			if (argc < 2)
+				usage(name, 1);
+			arg_dura = atoi(argv[1]);
 			argv++; argc--;
 		}
 		else if (strcmp(argv[0], "-F") == 0)
@@ -981,16 +1013,27 @@ int main(int argc, char **argv)
 
 	/* all running now */
 	printf("all started\n");
-	usleep(5000000);
+
+	gettimeofday(&start_date, NULL);
+	if (arg_dura)
+		stop_date = tv_ms_add(start_date, arg_dura * 1000);
+	else
+		stop_date = (struct timeval){ .tv_sec = 0, .tv_usec = 0 };
+
+	printf("#     time conns tot_conn  tot_req      tot_bytes    err\n");
+
+	do {
+		sleep(1);
+		gettimeofday(&now, NULL);
+		summary();
+	} while (!arg_dura || tv_cmp(tv_ms_add(start_date, arg_dura * 1000), now) > 0);
+
+	/* signal all threads that they must stop */
 	__sync_fetch_and_or(&running, THR_STOP_ALL);
-	printf("signaled stopping\n");
+
 	for (th = 0; th < arg_thrd; th++)
 		pthread_join(threads[th].pth, NULL);
 
-	for (th = 0; th < arg_thrd; th++) {
-		printf("thr %d: %lu conn %lu req\n", th, threads[th].tot_conn, threads[th].tot_req);
-	}
-
-	printf("all stopped\n");
+	summary();
 	return 0;
 }
