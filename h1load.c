@@ -952,11 +952,65 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss)
 	return 0;
 }
 
+/* reports a locally allocated string to represent a human-readable positive
+ * number on 4 characters (3 digits and a unit, which may be "." for ones) :
+ *   XXXu
+ *   XXuX
+ *   XuXX
+ */
+const char *human_number(double x)
+{
+	static char str[5];
+	char unit = '.';
+
+	if (x < 0)
+		x = -x;
+
+	do {
+		if (x == 0.0 || x >= 1.0) break;
+		x *= 1000.0; unit = 'm';
+		if (x >= 1.0) break;
+		x *= 1000.0; unit = 'u';
+		if (x >= 1.0) break;
+		x *= 1000.0; unit = 'n';
+		if (x >= 1.0) break;
+		x *= 1000.0; unit = 'p';
+		if (x >= 1.0) break;
+		x *= 1000.0; unit = 'f';
+	} while (0);
+
+	do {
+		if (x < 1000.0) break;
+		x /= 1000.0; unit = 'k';
+		if (x < 1000.0) break;
+		x /= 1000.0; unit = 'M';
+		if (x < 1000.0) break;
+		x /= 1000.0; unit = 'G';
+		if (x < 1000.0) break;
+		x /= 1000.0; unit = 'T';
+		if (x < 1000.0) break;
+		x /= 1000.0; unit = 'P';
+		if (x < 1000.0) break;
+		x /= 1000.0; unit = 'E';
+	} while (0);
+
+	if (x < 10.0)
+		snprintf(str, sizeof(str), "%d%c%02d", (int)x, unit, (int)((x - (int)x)*100));
+	else if (x < 100.0)
+		snprintf(str, sizeof(str), "%d%c%d",   (int)x, unit, (int)((x - (int)x)*10));
+	else
+		snprintf(str, sizeof(str), "%d%c",     (int)x, unit);
+	return str;
+}
+
 /* reports current date (now) and aggragated stats */
 void summary()
 {
 	int th;
 	uint64_t cur_conn, tot_conn, tot_req, tot_err, tot_rcvd;
+	static uint64_t prev_totc, prev_totr, prev_totb;
+	static struct timeval prev_date;
+	double interval;
 
 	cur_conn = tot_conn = tot_req = tot_err = tot_rcvd = 0;
 	for (th = 0; th < arg_thrd; th++) {
@@ -966,13 +1020,30 @@ void summary()
 		tot_err  += threads[th].tot_serr + threads[th].tot_cerr + threads[th].tot_xerr + threads[th].tot_perr;
 		tot_rcvd += threads[th].tot_rcvd;
 	}
-	printf("%9lu %5lu %8llu %8llu %14llu %6lu\n",
+
+	if (prev_date.tv_sec)
+		interval = tv_ms_remain(prev_date, now) / 1000.0;
+	else
+		interval = 1.0;
+
+	printf("%9lu %5lu %8llu %8llu %14llu %6lu ",
 	       (unsigned long)now.tv_sec,
 	       (unsigned long)cur_conn,
 	       (unsigned long long)tot_conn,
 	       (unsigned long long)tot_req,
 	       (unsigned long long)tot_rcvd,
 	       (unsigned long)tot_err);
+
+	printf("%s ", human_number((tot_conn - prev_totc) / interval));
+	printf("%s ", human_number((tot_req  - prev_totr) / interval));
+	printf("%s ", human_number((tot_rcvd - prev_totb) / interval));
+	printf("%s ", human_number(8*(tot_rcvd - prev_totb) / interval));
+	putchar('\n');
+
+	prev_totc = tot_conn;
+	prev_totr = tot_req;
+	prev_totb = tot_rcvd;
+	prev_date = now;
 }
 
 int main(int argc, char **argv)
@@ -1095,7 +1166,7 @@ int main(int argc, char **argv)
 	else
 		stop_date = (struct timeval){ .tv_sec = 0, .tv_usec = 0 };
 
-	printf("#     time conns tot_conn  tot_req      tot_bytes    err\n");
+	printf("#     time conns tot_conn  tot_req      tot_bytes    err  cps  rps  Bps  bps\n");
 
 	do {
 		sleep(1);
@@ -1109,6 +1180,7 @@ int main(int argc, char **argv)
 	for (th = 0; th < arg_thrd; th++)
 		pthread_join(threads[th].pth, NULL);
 
+	gettimeofday(&now, NULL);
 	summary();
 	return 0;
 }
