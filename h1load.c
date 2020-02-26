@@ -161,6 +161,7 @@ int arg_fast = 0;     // merge send with connect's ACK
 int arg_head = 0;     // use HEAD
 int arg_dura = 0;     // test duration in sec if non-nul
 char *arg_url;
+char *arg_hdr;
 
 /* global state */
 #define THR_STOP_ALL 0x80000000
@@ -849,6 +850,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -t <threads>  number of threads to create (1)\n"
 	    "  -w <time>     I/O timeout in milliseconds (-1)\n"
 	    "  -T <time>     think time after a response (0)\n"
+	    "  -H \"foo:bar\"  adds this header name and value\n"
 	    "  -F            merge send() with connect's ACK\n"
 	    "  -I            use HEAD instead of GET\n"
 	    "  -h            display this help\n"
@@ -1046,6 +1048,30 @@ void summary()
 	prev_date = now;
 }
 
+/* appends <txt1>, <txt2> and <txt3> to pfx when not NULL. <str> may also be
+ * NULL, in this case it will be allocated first. If everything is empty, an
+ * empty string will still be returned. NULL is returned on allocation error.
+ */
+char *str_append(char *str, const char *txt1, const char *txt2, const char *txt3)
+{
+	size_t len0 = str  ? strlen(str)  : 0;
+	size_t len1 = txt1 ? strlen(txt1) : 0;
+	size_t len2 = txt2 ? strlen(txt2) : 0;
+	size_t len3 = txt3 ? strlen(txt3) : 0;
+
+	str = realloc(str, len0 + len1 + len2 + len3 + 1);
+	if (!str)
+		return NULL;
+	if (len1)
+		memcpy(str + len0, txt1, len1);
+	if (len2)
+		memcpy(str + len0 + len1, txt2, len2);
+	if (len3)
+		memcpy(str + len0 + len1 + len2, txt3, len3);
+	str[len0 + len1 + len2 + len3] = 0;
+	return str;
+}
+
 int main(int argc, char **argv)
 {
 	const char *name = argv[0];
@@ -1057,7 +1083,7 @@ int main(int argc, char **argv)
 
 	argv++;
 	argc--;
-
+	arg_hdr = NULL;
 	while (argc > 0) {
 		if (**argv != '-')
 			break;
@@ -1066,6 +1092,14 @@ int main(int argc, char **argv)
 			if (argc < 2)
 				usage(name, 1);
 			arg_conn = atoi(argv[1]);
+			argv++; argc--;
+		}
+		else if (strcmp(argv[0], "-H") == 0) {
+			if (argc < 2)
+				usage(name, 1);
+			arg_hdr = str_append(arg_hdr, argv[1], "\r\n", NULL);
+			if (!arg_hdr)
+				die(1, "memory allocation error for a header\n");
 			argv++; argc--;
 		}
 		else if (strcmp(argv[0], "-n") == 0) {
@@ -1143,9 +1177,10 @@ int main(int argc, char **argv)
 
 	/* prepare the request that will be duplicated */
 	snprintf(buf, sizeof(buf),
-	         "%s %s HTTP/1.1\r\nHost: %s\r\n\r\n",
+	         "%s %s HTTP/1.1\r\nHost: %s\r\n%s\r\n",
 	         arg_head ? "HEAD" : "GET",
-	         arg_url, host);
+	         arg_url, host,
+		 arg_hdr ? arg_hdr : "");
 
 	if (addr_to_ss(host, &ss, &err) < 0)
 		die(1, err.msg);
