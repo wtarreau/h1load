@@ -775,7 +775,6 @@ void work(void *arg)
 		usleep(10000);
 
 	while (!(running & THR_STOP_ALL)) {
-		//printf("thr=%d curconn=%d maxconn=%d\n", thr->tid, thr->curconn, thr->maxconn);
 		for (i = 0; thr->curconn < thr->maxconn && i < pollevents; i++) {
 			conn = add_connection(thread);
 			if (!conn)
@@ -1193,7 +1192,6 @@ int main(int argc, char **argv)
 	}
 
 	/* all running now */
-	printf("all started\n");
 
 	gettimeofday(&start_date, NULL);
 	if (arg_dura)
