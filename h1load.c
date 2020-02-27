@@ -816,6 +816,8 @@ void work(void *arg)
 
 	while (!(running & THR_STOP_ALL)) {
 		for (i = 0; thr->curconn < thr->maxconn && i < pollevents; i++) {
+			if (running & THR_STOP_ALL)
+				break;
 			conn = add_connection(thread);
 			if (!conn)
 				break;
