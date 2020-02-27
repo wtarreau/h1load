@@ -154,7 +154,7 @@ const int pollevents = 100;
 /* command line arguments */
 int arg_conn = 1;     // concurrent conns
 int arg_rcon = -1;    // max requests per conn
-int arg_reqs = -1;    // max total requests
+long arg_reqs = -1;   // max total requests
 int arg_thnk = 0;     // think time (ms)
 int arg_thrd = 1;     // number of threads
 int arg_wait = 10000; // I/O time out (ms)
@@ -174,6 +174,8 @@ static char *hdr_block;
 volatile uint32_t running = 0; // # = running threads, b31 set = must stop now!
 struct thread threads[MAXTHREADS];
 struct timeval start_date, stop_date, now;
+
+volatile unsigned long global_req = 0; // global req counter to sync threads.
 
 /* current thread */
 __thread struct thread *thr;
@@ -256,6 +258,21 @@ static inline struct timeval tv_ms_add(const struct timeval from, unsigned int m
 
 
 /************ connection management **************/
+
+static inline int may_add_req()
+{
+	unsigned long rq_cnt = global_req;
+
+	if (arg_reqs <= 0)
+		return 1;
+
+	do {
+		if (rq_cnt >= arg_reqs)
+			return 0;
+	} while (!__atomic_compare_exchange_n(&global_req, &rq_cnt, rq_cnt + 1,
+	                                      0, __ATOMIC_RELAXED, __ATOMIC_RELAXED));
+	return 1;
+}
 
 /* updates polling on epoll FD <ep> for fd <fd> supposed to match connection
  * flags <flags>.
@@ -572,6 +589,9 @@ void handle_conn(struct thread *t, struct conn *conn)
 			goto wait_io;
 		}
 
+		if (!may_add_req())
+			goto kill_conn;
+
 		conn->flags &= ~(CF_HEAD | CF_V11 | CF_EXP);
 		conn->to_recv = 0; // wait for headers
 		conn->tot_req++;
@@ -596,7 +616,8 @@ void handle_conn(struct thread *t, struct conn *conn)
 			nbvec++;
 		}
 
-		if (arg_rcon > 0 && conn->tot_req == arg_rcon) {
+		if ((arg_rcon > 0 && conn->tot_req == arg_rcon) ||
+		    (arg_reqs > 0 && global_req >= arg_reqs)) {
 			iovec[nbvec].iov_base = "Connection: close\r\n";
 			iovec[nbvec].iov_len = 19;
 			nbvec++;
@@ -818,12 +839,17 @@ void work(void *arg)
 		for (i = 0; thr->curconn < thr->maxconn && i < pollevents; i++) {
 			if (running & THR_STOP_ALL)
 				break;
+			if (arg_reqs > 0 && global_req >= arg_reqs)
+				break;
 			conn = add_connection(thread);
 			if (!conn)
 				break;
 			/* send request or subscribe */
 			handle_conn(thr, conn);
 		}
+
+		if (arg_reqs > 0 && global_req >= arg_reqs && !thr->curconn)
+			break;
 
 		t1 = 1000; // one call per second
 		t2 = check_timeouts(thr, &thr->wq);
@@ -1158,7 +1184,7 @@ int main(int argc, char **argv)
 		else if (strcmp(argv[0], "-n") == 0) {
 			if (argc < 2)
 				usage(name, 1);
-			arg_reqs = atoi(argv[1]);
+			arg_reqs = atol(argv[1]);
 			argv++; argc--;
 		}
 		else if (strcmp(argv[0], "-r") == 0) {
@@ -1270,6 +1296,8 @@ int main(int argc, char **argv)
 
 	while (1) {
 		sleep(1);
+		if (arg_reqs > 0 && global_req >= arg_reqs)
+			break;
 		gettimeofday(&now, NULL);
 		if (arg_dura && tv_cmp(tv_ms_add(start_date, arg_dura * 1000), now) <= 0)
 			break;
