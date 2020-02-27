@@ -1266,11 +1266,13 @@ int main(int argc, char **argv)
 
 	printf("#     time conns tot_conn  tot_req      tot_bytes    err  cps  rps  Bps  bps\n");
 
-	do {
+	while (1) {
 		sleep(1);
 		gettimeofday(&now, NULL);
+		if (arg_dura && tv_cmp(tv_ms_add(start_date, arg_dura * 1000), now) <= 0)
+			break;
 		summary();
-	} while (!arg_dura || tv_cmp(tv_ms_add(start_date, arg_dura * 1000), now) > 0);
+	}
 
 	/* signal all threads that they must stop */
 	__sync_fetch_and_or(&running, THR_STOP_ALL);
