@@ -160,6 +160,7 @@ int arg_verb = 0;     // verbosity
 int arg_fast = 0;     // merge send with connect's ACK
 int arg_head = 0;     // use HEAD
 int arg_dura = 0;     // test duration in sec if non-nul
+int arg_host = 0;     // set if host was passed in a header
 char *arg_url;
 char *arg_hdr;
 
@@ -1079,6 +1080,7 @@ int main(int argc, char **argv)
 	const char *name = argv[0];
 	struct sockaddr_storage ss;
 	struct errmsg err = { .len = 0, .size = 100, .msg = alloca(100) };
+	int req_len;
 	char *host;
 	char c;
 	int th;
@@ -1102,6 +1104,8 @@ int main(int argc, char **argv)
 			arg_hdr = str_append(arg_hdr, argv[1], "\r\n", NULL);
 			if (!arg_hdr)
 				die(1, "memory allocation error for a header\n");
+			if (strncasecmp(argv[1], "host:", 5) == 0)
+				arg_host = 1;
 			argv++; argc--;
 		}
 		else if (strcmp(argv[0], "-n") == 0) {
@@ -1178,11 +1182,19 @@ int main(int argc, char **argv)
 		arg_url = "/";
 
 	/* prepare the request that will be duplicated */
-	snprintf(buf, sizeof(buf),
-	         "%s %s HTTP/1.1\r\nHost: %s\r\n%s\r\n",
-	         arg_head ? "HEAD" : "GET",
-	         arg_url, host,
-		 arg_hdr ? arg_hdr : "");
+	req_len = 0;
+	req_len += snprintf(buf + req_len, sizeof(buf) - req_len,
+	                    "%s %s HTTP/1.1\r\n",
+	                    arg_head ? "HEAD" : "GET", arg_url);
+
+	if (!arg_host)
+		req_len += snprintf(buf + req_len, sizeof(buf) - req_len,
+		                    "Host: %s\r\n", host);
+	if (arg_hdr)
+		req_len += snprintf(buf + req_len, sizeof(buf) - req_len,
+		                    "%s", arg_hdr);
+
+	req_len += snprintf(buf + req_len, sizeof(buf) - req_len, "\r\n");
 
 	if (addr_to_ss(host, &ss, &err) < 0)
 		die(1, err.msg);
