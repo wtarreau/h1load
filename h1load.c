@@ -131,8 +131,10 @@ struct thread {
 	uint64_t tot_cto;            // total connection timeouts on this thread
 	uint64_t tot_xto;            // total xfer timeouts on this thread
 	int epollfd;                 // poller's FD
-	char *req;                   // copy of the full request to be sent
-	int req_len;                 // request's length
+	char *start_line;            // copy of the request's start line to be sent
+	int start_len;               // request's start line's length
+	char *hdr_block;             // copy of the request's header block to be sent
+	int hdr_len;                 // request's header block's length
 	struct timeval start_date;   // thread's start date
 	int tid;                     // thread number
 	pthread_t pth;               // the pthread descriptor
@@ -163,6 +165,9 @@ int arg_dura = 0;     // test duration in sec if non-nul
 int arg_host = 0;     // set if host was passed in a header
 char *arg_url;
 char *arg_hdr;
+
+static char *start_line;
+static char *hdr_block;
 
 /* global state */
 #define THR_STOP_ALL 0x80000000
@@ -525,6 +530,9 @@ int parse_resp(struct conn *conn, char *buf, int len)
 void handle_conn(struct thread *t, struct conn *conn)
 {
 	const struct linger nolinger = { .l_onoff = 1, .l_linger = 0 };
+	struct iovec iovec[4];
+	struct msghdr msghdr = { };
+	int nbvec;
 	int expired = !!(conn->flags & CF_EXP);
 	int loops;
 	int ret;
@@ -569,11 +577,32 @@ void handle_conn(struct thread *t, struct conn *conn)
 		t->tot_req++;
 
 		/* check for HEAD */
-		if (*(uint32_t *)t->req == ntohl(0x48454144))
+		if (*(uint32_t *)t->start_line == ntohl(0x48454144))
 			conn->flags |= CF_HEAD;
 
 		/* finally ready, let's try (again?) */
-		ret = send(conn->fd, t->req, t->req_len, MSG_NOSIGNAL | MSG_DONTWAIT);
+		nbvec = 0;
+
+		/* start line */
+		iovec[nbvec].iov_base = t->start_line;
+		iovec[nbvec].iov_len  = t->start_len;
+		nbvec++;
+
+		/* header block */
+		if (t->hdr_len) {
+			iovec[nbvec].iov_base = t->hdr_block;
+			iovec[nbvec].iov_len  = t->hdr_len;
+			nbvec++;
+		}
+
+		iovec[nbvec].iov_base = "\r\n";
+		iovec[nbvec].iov_len = 2;
+		nbvec++;
+
+		msghdr.msg_iov = iovec;
+		msghdr.msg_iovlen = nbvec;
+
+		ret = sendmsg(conn->fd, &msghdr, MSG_NOSIGNAL | MSG_DONTWAIT);
 		if (ret < 0) {
 			if (errno == EAGAIN) {
 				cant_send(conn);
@@ -937,12 +966,21 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss)
 		return -1;
 	}
 
-	threads[th].req = strdup(buf);
-	if (!threads[th].req) {
-		err->len = snprintf(err->msg, err->size, "Failed to allocate request for thread %d\n", th);
+	threads[th].start_line = strdup(start_line);
+	if (!threads[th].start_line) {
+		err->len = snprintf(err->msg, err->size, "Failed to allocate start line for thread %d\n", th);
 		return -1;
 	}
-	threads[th].req_len = strlen(threads[th].req);
+	threads[th].start_len = strlen(threads[th].start_line);
+
+	if (hdr_block) {
+		threads[th].hdr_block = strdup(hdr_block);
+		if (!threads[th].hdr_block) {
+			err->len = snprintf(err->msg, err->size, "Failed to allocate header block for thread %d\n", th);
+			return -1;
+		}
+		threads[th].hdr_len = strlen(threads[th].hdr_block);
+	}
 
 	threads[th].epollfd = epoll_create(1);
 	if (threads[th].epollfd < 0) {
@@ -1187,12 +1225,17 @@ int main(int argc, char **argv)
 	                    "%s %s HTTP/1.1\r\n",
 	                    arg_head ? "HEAD" : "GET", arg_url);
 
+	start_line = strdup(buf);
+	req_len = 0;
+
 	if (!arg_host)
 		req_len += snprintf(buf + req_len, sizeof(buf) - req_len,
 		                    "Host: %s\r\n", host);
 	if (arg_hdr)
 		req_len += snprintf(buf + req_len, sizeof(buf) - req_len,
 		                    "%s", arg_hdr);
+
+	hdr_block = strdup(buf);
 
 	req_len += snprintf(buf + req_len, sizeof(buf) - req_len, "\r\n");
 
