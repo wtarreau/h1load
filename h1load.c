@@ -574,6 +574,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 
 		conn->flags &= ~(CF_HEAD | CF_V11 | CF_EXP);
 		conn->to_recv = 0; // wait for headers
+		conn->tot_req++;
 		t->tot_req++;
 
 		/* check for HEAD */
@@ -592,6 +593,12 @@ void handle_conn(struct thread *t, struct conn *conn)
 		if (t->hdr_len) {
 			iovec[nbvec].iov_base = t->hdr_block;
 			iovec[nbvec].iov_len  = t->hdr_len;
+			nbvec++;
+		}
+
+		if (arg_rcon > 0 && conn->tot_req == arg_rcon) {
+			iovec[nbvec].iov_base = "Connection: close\r\n";
+			iovec[nbvec].iov_len = 19;
 			nbvec++;
 		}
 
