@@ -523,6 +523,7 @@ int parse_resp(struct conn *conn, char *buf, int len)
 /* handles I/O and timeouts for connection <conn> on thread <t> */
 void handle_conn(struct thread *t, struct conn *conn)
 {
+	const struct linger nolinger = { .l_onoff = 1, .l_linger = 0 };
 	int expired = !!(conn->flags & CF_EXP);
 	int loops;
 	int ret;
@@ -530,7 +531,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 	if (conn->state == CS_CON) {
 		if (conn->flags & CF_ERR) {
 			t->tot_cerr++;
-			goto kill_conn;
+			goto close_conn;
 		}
 
 		if (conn->flags & CF_BLKW) {
@@ -550,7 +551,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 	send_again:
 		if (conn->flags & CF_ERR) {
 			t->tot_xerr++;
-			goto kill_conn;
+			goto close_conn;
 		}
 
 		if (conn->flags & CF_BLKW) {
@@ -578,7 +579,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 				goto wait_io;
 			}
 			t->tot_xerr++;
-			goto kill_conn;
+			goto close_conn;
 		}
 
 		t->tot_sent += ret;
@@ -592,7 +593,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 	if (conn->state == CS_RCV) {
 		if (conn->flags & CF_ERR) {
 			t->tot_xerr++;
-			goto kill_conn;
+			goto close_conn;
 		}
 
 		if (conn->flags & CF_BLKR) {
@@ -617,7 +618,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 					goto wait_io;
 				}
 				t->tot_xerr++;
-				goto kill_conn;
+				goto close_conn;
 			}
 
 			t->tot_rcvd += ret;
@@ -652,7 +653,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 					if (conn->to_recv != ~0)
 						t->tot_xerr++;
 					conn->state = CS_END;
-					goto kill_conn;
+					goto close_conn;
 				}
 
 				if (errno == EAGAIN) {
@@ -660,7 +661,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 					goto wait_io;
 				}
 				t->tot_xerr++;
-				goto kill_conn;
+				goto close_conn;
 			}
 
 			t->tot_rcvd += ret;
@@ -702,11 +703,11 @@ void handle_conn(struct thread *t, struct conn *conn)
 			if (ret == 0) {
 				/* received a shutdown */
 				conn->state = CS_END;
-				goto kill_conn;
+				goto close_conn;
 			}
 
 			if (errno != EAGAIN)
-				goto kill_conn;
+				goto close_conn;
 		}
 
 		if (expired) {
@@ -724,7 +725,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 
 	if (conn->state == CS_END) {
 		/* it was a close */
-		goto kill_conn;
+		goto close_conn;
 	}
 	goto done;
 
@@ -738,6 +739,8 @@ void handle_conn(struct thread *t, struct conn *conn)
 	return;
 
  kill_conn:
+	setsockopt(conn->fd, SOL_SOCKET, SO_LINGER, &nolinger, sizeof(nolinger));
+ close_conn:
 	close(conn->fd);
 	t->curconn--;
 	LIST_DELETE(&conn->link);
