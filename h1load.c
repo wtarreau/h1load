@@ -163,6 +163,8 @@ int arg_fast = 0;     // merge send with connect's ACK
 int arg_head = 0;     // use HEAD
 int arg_dura = 0;     // test duration in sec if non-nul
 int arg_host = 0;     // set if host was passed in a header
+int arg_ovre = 0;     // overhead correction, extra bytes
+int arg_ovrp = 0;     // overhead correction, per-payload size
 char *arg_url;
 char *arg_hdr;
 
@@ -918,6 +920,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -w <time>     I/O timeout in milliseconds (-1)\n"
 	    "  -T <time>     think time after a response (0)\n"
 	    "  -H \"foo:bar\"  adds this header name and value\n"
+	    "  -O extra/payl overhead: #extra bytes per payload size\n"
 	    "  -F            merge send() with connect's ACK\n"
 	    "  -I            use HEAD instead of GET\n"
 	    "  -h            display this help\n"
@@ -1085,7 +1088,7 @@ const char *human_number(double x)
 void summary()
 {
 	int th;
-	uint64_t cur_conn, tot_conn, tot_req, tot_err, tot_rcvd;
+	uint64_t cur_conn, tot_conn, tot_req, tot_err, tot_rcvd, bytes;
 	static uint64_t prev_totc, prev_totr, prev_totb;
 	static struct timeval prev_date;
 	double interval;
@@ -1112,10 +1115,21 @@ void summary()
 	       (unsigned long long)tot_rcvd,
 	       (unsigned long)tot_err);
 
+	bytes = tot_rcvd - prev_totb;
+	if (arg_ovrp) {
+		long small_pkt = (bytes + (arg_ovrp - 1)) / arg_ovrp;
+		/* we need to account for overhead also on small packets and
+		 * at minima once per response.
+		 */
+		if (small_pkt < tot_req  - prev_totr)
+			small_pkt = tot_req  - prev_totr;
+		bytes += small_pkt * arg_ovre;
+	}
+
 	printf("%s ", human_number((tot_conn - prev_totc) / interval));
 	printf("%s ", human_number((tot_req  - prev_totr) / interval));
-	printf("%s ", human_number((tot_rcvd - prev_totb) / interval));
-	printf("%s ", human_number(8*(tot_rcvd - prev_totb) / interval));
+	printf("%s ", human_number(bytes / interval));
+	printf("%s ", human_number(bytes * 8 / interval));
 	putchar('\n');
 
 	prev_totc = tot_conn;
@@ -1203,6 +1217,18 @@ int main(int argc, char **argv)
 			if (argc < 2)
 				usage(name, 1);
 			arg_wait = atoi(argv[1]);
+			argv++; argc--;
+		}
+		else if (strcmp(argv[0], "-O") == 0) {
+			char *slash;
+			if (argc < 2)
+				usage(name, 1);
+			slash = strchr(argv[1], '/');
+			if (!slash)
+				usage(name, 1);
+			*(slash++) = 0;
+			arg_ovre = atoi(argv[1]);
+			arg_ovrp = atoi(slash);
 			argv++; argc--;
 		}
 		else if (strcmp(argv[0], "-T") == 0) {
