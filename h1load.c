@@ -838,7 +838,7 @@ void work(void *arg)
 		usleep(10000);
 
 	while (!(running & THR_STOP_ALL)) {
-		for (i = 0; thr->curconn < thr->maxconn && i < pollevents; i++) {
+		for (i = 0; thr->curconn < thr->maxconn && i < 2*pollevents; i++) {
 			if (running & THR_STOP_ALL)
 				break;
 			if (arg_reqs > 0 && global_req >= arg_reqs)
