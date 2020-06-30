@@ -1303,6 +1303,8 @@ int main(int argc, char **argv)
 	if (addr_to_ss(host, &ss, &err) < 0)
 		die(1, err.msg);
 
+	setlinebuf(stdout);
+
 	for (th = 0; th < arg_thrd; th++) {
 		if (create_thread(th, &err, &ss) < 0) {
 			__sync_fetch_and_or(&running, THR_STOP_ALL);
