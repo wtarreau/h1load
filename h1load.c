@@ -737,7 +737,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 		/* we've reached the end */
 
 		if (arg_thnk) {
-			conn->expire = tv_ms_add(t->now, arg_thnk);
+			conn->expire = tv_ms_add(t->now, arg_thnk * (4096 - 128 + rand()%257) / 4096);
 			LIST_DELETE(&conn->link);
 			LIST_APPEND(&t->sq, &conn->link);
 			conn->state = CS_THK;
