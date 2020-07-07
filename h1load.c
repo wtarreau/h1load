@@ -165,6 +165,7 @@ int arg_dura = 0;     // test duration in sec if non-nul
 int arg_host = 0;     // set if host was passed in a header
 int arg_ovre = 0;     // overhead correction, extra bytes
 int arg_ovrp = 0;     // overhead correction, per-payload size
+int arg_slow = 0;     // slow start: delay in milliseconds
 char *arg_url;
 char *arg_hdr;
 
@@ -834,6 +835,7 @@ void work(void *arg)
 	struct thread *thread = (struct thread *)arg;
 	struct conn *conn;
 	int nbev, i;
+	uint32_t maxconn;
 	unsigned long t1, t2;
 
 	thr = thread;
@@ -843,7 +845,21 @@ void work(void *arg)
 		usleep(10000);
 
 	while (!(running & THR_STOP_ALL)) {
-		for (i = 0; thr->curconn < thr->maxconn && i < 2*pollevents; i++) {
+		maxconn = thr->maxconn;
+
+		if (arg_slow) {
+			int duration = tv_ms_remain(start_date, now);
+
+			if (duration < arg_slow) {
+				maxconn = ((uint64_t)thr->maxconn * duration + arg_slow / 2) / arg_slow;
+				maxconn = maxconn ? maxconn : 1;
+			} else {
+				/* done, don't come back here */
+				arg_slow = 0;
+			}
+		}
+
+		for (i = 0; thr->curconn < maxconn && i < 2*pollevents; i++) {
 			if (running & THR_STOP_ALL)
 				break;
 			if (arg_reqs > 0 && global_req >= arg_reqs)
@@ -867,7 +883,7 @@ void work(void *arg)
 		if (t2 && t2 < t1)
 			t1 = t2;
 
-		if (thr->curconn < thr->maxconn)
+		if (thr->curconn < maxconn)
 			t1 = 0;
 
 		nbev = epoll_wait(thr->epollfd, thr->events, pollevents, t1);
@@ -921,6 +937,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -c <conn>     concurrent connections (1)\n"
 	    "  -n <reqs>     maximum total requests (-1)\n"
 	    "  -r <reqs>     number of requests per connection (-1)\n"
+	    "  -s <time>     soft start: time in ms to reach 100%% load\n"
 	    "  -t <threads>  number of threads to create (1)\n"
 	    "  -w <time>     I/O timeout in milliseconds (-1)\n"
 	    "  -T <time>     think time after a response (0)\n"
@@ -1210,6 +1227,12 @@ int main(int argc, char **argv)
 			if (argc < 2)
 				usage(name, 1);
 			arg_rcon = atoi(argv[1]);
+			argv++; argc--;
+		}
+		else if (strcmp(argv[0], "-s") == 0) {
+			if (argc < 2)
+				usage(name, 1);
+			arg_slow = atoi(argv[1]);
 			argv++; argc--;
 		}
 		else if (strcmp(argv[0], "-t") == 0) {
