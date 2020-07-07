@@ -653,6 +653,15 @@ void handle_conn(struct thread *t, struct conn *conn)
 		/* nothing more to send, wait for response */
 		stop_send(conn);
 		conn->state = CS_RCV;
+
+		/* OPTIM: we know an immediate recv will fail, if we're already
+		 * subscribed, let's wait for epoll to notify us. This won't
+		 * work with EPOLL_ET.
+		 */
+		if (conn->flags & CF_POLR) {
+			cant_recv(conn);
+			goto wait_io;
+		}
 	}
 
 
