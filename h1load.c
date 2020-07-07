@@ -306,8 +306,13 @@ static inline void update_conn(int ep, struct conn *conn)
 		update_poll(ep, conn->fd, flags, conn);
 		if (conn->flags & CF_BLKW)
 			conn->flags |= CF_POLW;
+		else
+			conn->flags &= ~CF_POLW;
+
 		if (conn->flags & CF_BLKR)
 			conn->flags |= CF_POLR;
+		else
+			conn->flags &= ~CF_POLR;
 	}
 }
 
