@@ -166,6 +166,7 @@ int arg_host = 0;     // set if host was passed in a header
 int arg_ovre = 0;     // overhead correction, extra bytes
 int arg_ovrp = 0;     // overhead correction, per-payload size
 int arg_slow = 0;     // slow start: delay in milliseconds
+int arg_serr = 0;     // stop on first error
 char *arg_url;
 char *arg_hdr;
 
@@ -407,6 +408,8 @@ struct conn *add_connection(struct thread *t)
  fail_sock:
 	free(conn);
  fail_conn:
+	if (arg_serr)
+		__sync_fetch_and_or(&running, THR_STOP_ALL);
 	t->tot_serr++;
 	return NULL;
 }
@@ -564,6 +567,8 @@ void handle_conn(struct thread *t, struct conn *conn)
 
 	if (conn->state == CS_CON) {
 		if (conn->flags & CF_ERR) {
+			if (arg_serr)
+				__sync_fetch_and_or(&running, THR_STOP_ALL);
 			t->tot_cerr++;
 			goto close_conn;
 		}
@@ -952,6 +957,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -T <time>     think time after a response (0)\n"
 	    "  -H \"foo:bar\"  adds this header name and value\n"
 	    "  -O extra/payl overhead: #extra bytes per payload size\n"
+	    "  -e            stop upon first connection error\n"
 	    "  -F            merge send() with connect's ACK\n"
 	    "  -I            use HEAD instead of GET\n"
 	    "  -h            display this help\n"
@@ -1280,6 +1286,8 @@ int main(int argc, char **argv)
 			arg_dura = atoi(argv[1]);
 			argv++; argc--;
 		}
+		else if (strcmp(argv[0], "-e") == 0)
+			arg_serr = 1;
 		else if (strcmp(argv[0], "-F") == 0)
 			arg_fast = 1;
 		else if (strcmp(argv[0], "-I") == 0)
@@ -1362,6 +1370,8 @@ int main(int argc, char **argv)
 	while (1) {
 		sleep(1);
 		if (arg_reqs > 0 && global_req >= arg_reqs)
+			break;
+		if (running & THR_STOP_ALL)
 			break;
 		gettimeofday(&now, NULL);
 		if (arg_dura && tv_cmp(tv_ms_add(start_date, arg_dura * 1000), now) <= 0)
