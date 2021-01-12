@@ -107,8 +107,6 @@ struct conn {
 	int fd;                      // associated FD
 	uint64_t to_recv;            // bytes left to receive; 0=headers; ~0=unlimited
 	uint64_t tot_req;            // total requests on this connection
-	uint64_t tot_sent;           // total bytes sent on this connection
-	uint64_t tot_rcvd;           // total bytes received on this connection
 	struct timeval req_date;     // moment the request was sent
 };
 
@@ -358,7 +356,7 @@ struct conn *new_conn()
 		conn->flags = 0;
 		conn->state = CS_NEW;
 		conn->expire = (struct timeval){ .tv_sec = 0, .tv_usec = 0 };
-		conn->tot_req = conn->tot_sent = conn->tot_rcvd = 0;
+		conn->tot_req = 0;
 	}
 	return conn;
 }
