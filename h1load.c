@@ -415,7 +415,9 @@ struct conn *add_connection(struct thread *t)
 	return NULL;
 }
 
-/* parse HTTP response in <buf> of len <len>. Returns <0 on error */
+/* parse HTTP response in <buf> of len <len>. Returns <0 on error (incl too
+ * short), or the number of bytes of headers block on success.
+ */
 int parse_resp(struct conn *conn, char *buf, int len)
 {
 	int ver;
@@ -548,8 +550,8 @@ int parse_resp(struct conn *conn, char *buf, int len)
 	else if (conn->flags & CF_CHNK)
 		conn->to_recv = -1; // TE: tunnel for now
 	else
-		conn->to_recv = cl - (end - p);
-	return 0;
+		conn->to_recv = cl; // content-length
+	return p - buf;
 
  too_short:
 	return -1;
@@ -564,7 +566,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 	int nbvec;
 	int expired = !!(conn->flags & CF_EXP);
 	int loops;
-	int ret;
+	int ret, parsed;
 
 	if (conn->state == CS_CON) {
 		if (conn->flags & CF_ERR) {
@@ -703,10 +705,30 @@ void handle_conn(struct thread *t, struct conn *conn)
 			}
 
 			t->tot_rcvd += ret;
-			if (parse_resp(conn, buf, ret) < 0) {
+			parsed = parse_resp(conn, buf, ret);
+			if (parsed < 0) {
 				t->tot_perr++;
 				goto kill_conn;
 			}
+
+			/* compute how much left is available in the buffer */
+			ret -= parsed;
+			if (conn->to_recv && conn->to_recv != -1) {
+				if (conn->to_recv >= ret) {
+					parsed += ret;
+					conn->to_recv -= ret;
+					ret = 0;
+				}
+				else {
+					parsed += conn->to_recv;
+					ret -= conn->to_recv;
+					conn->to_recv = 0;
+				}
+			}
+
+			/* next data, if any, starts at <buf+parsed> for <ret>
+			 * bytes. In practice it's only the case with chunking.
+			 */
 		}
 
 		loops = 3;
