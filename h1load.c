@@ -86,6 +86,7 @@ struct errmsg {
 #define CF_HEAD 0x00000020    // a HEAD request was last sent
 #define CF_V11  0x00000040    // HTTP/1.1 used for the response
 #define CF_EXP  0x00000080    // task expired in a wait queue
+#define CF_CHNK 0x00000100    // chunked encoding
 
 /* connection states */
 enum cstate {
@@ -420,7 +421,7 @@ int parse_resp(struct conn *conn, char *buf, int len)
 	int ver;
 	int status;
 	uint64_t cl = 0;
-	int do_close = 0, do_te = 0;
+	int do_close = 0;
 	char *p, *hdr, *col, *eol, *end;
 
 	if (len < 13)
@@ -514,10 +515,10 @@ int parse_resp(struct conn *conn, char *buf, int len)
 
 		/* 2/ transfer-encoding (just check for presence) */
 		if (col - hdr == 17 && strncasecmp(hdr, "transfer-encoding", 17) == 0) {
-			do_te = 1;
+			conn->flags |= CF_CHNK;
 		}
 
-		if (col - hdr == 14 && !do_te && status != 204 &&
+		if (col - hdr == 14 && !(conn->flags & CF_CHNK) && status != 204 &&
 		    status != 304 && strncasecmp(hdr, "content-length", 14) == 0) {
 			unsigned char k;
 			cl = 0;
@@ -533,7 +534,7 @@ int parse_resp(struct conn *conn, char *buf, int len)
 		}
 	}
 
-	/* so now we have do_te set if transfer-encoding must be used, cl equal
+	/* now we have CF_CHNK set if transfer-encoding must be used, cl equal
 	 * to the last content-length header parsed, do_close indicating the
 	 * desired connection mode, status set to the HTTP status, ver set to
 	 * the version (0 or 1). We just have to set the amount of bytes left
@@ -544,7 +545,7 @@ int parse_resp(struct conn *conn, char *buf, int len)
 		conn->to_recv = -1; // close: tunnel
 	else if (conn->flags & CF_HEAD || status == 204 || status == 304)
 		conn->to_recv = 0;
-	else if (do_te)
+	else if (conn->flags & CF_CHNK)
 		conn->to_recv = -1; // TE: tunnel for now
 	else
 		conn->to_recv = cl - (end - p);
