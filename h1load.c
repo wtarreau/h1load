@@ -107,6 +107,7 @@ struct conn {
 	int fd;                      // associated FD
 	uint64_t to_recv;            // bytes left to receive; 0=headers; ~0=unlimited
 	uint64_t tot_req;            // total requests on this connection
+	uint64_t chnk_size;          // current chunk size being parsed
 	struct timeval req_date;     // moment the request was sent
 };
 
@@ -545,8 +546,6 @@ int parse_resp(struct conn *conn, char *buf, int len)
 		conn->to_recv = -1; // close: tunnel
 	else if (conn->flags & CF_HEAD || status == 204 || status == 304)
 		conn->to_recv = 0;
-	else if (conn->flags & CF_CHNK)
-		conn->to_recv = -1; // TE: tunnel for now
 	else
 		conn->to_recv = cl; // content-length
 	return p - buf;
@@ -687,14 +686,23 @@ void handle_conn(struct thread *t, struct conn *conn)
 		}
 
 		/* finally ready, let's try (again?) */
-		if (conn->to_recv == 0) {
-			/* Headers expected. For now we assume we get all of them
-			 * at once. Later we may use a temp buffer to store partial
-			 * contents when that happens.
+
+		/* For reads smaller than the current buffer size, it's better
+		 * to place the data there again, especially in chunked mode
+		 * since we may have to read again afterwards. For other cases
+		 * we defer to the more efficient loop which uses MSG_TRUNC. Note
+		 * that conn->to_recv==0 indicates that we need to parse, thus
+		 * we're facing headers or chunk sizes. As we don't do
+		 * pipelining we're certain not to receive more than desired.
+		 */
+		if (conn->to_recv == 0 || (conn->to_recv <= sizeof(buf) && (conn->flags & CF_CHNK))) {
+			/* Headers or small chunks expected. For now we assume
+			 * we get all headers at once. Later we may use a temp
+			 * buffer to store partial contents when that happens.
 			 */
 			ret = recv(conn->fd, buf, sizeof(buf), MSG_NOSIGNAL | MSG_DONTWAIT);
-			if (ret < 0) {
-				if (errno == EAGAIN) {
+			if (ret <= 0) {
+				if (ret < 0 && errno == EAGAIN) {
 					cant_recv(conn);
 					goto wait_io;
 				}
@@ -703,30 +711,86 @@ void handle_conn(struct thread *t, struct conn *conn)
 			}
 
 			t->tot_rcvd += ret;
-			parsed = parse_resp(conn, buf, ret);
-			if (parsed < 0) {
-				t->tot_perr++;
-				goto kill_conn;
+			parsed = 0;
+			if (!(conn->flags & CF_CHNK)) {
+				/* the only case of !to_recv && !CHNK is when
+				 * we are waiting for headers
+				 */
+				parsed = parse_resp(conn, buf, ret);
+				if (parsed < 0) {
+					t->tot_perr++;
+					goto kill_conn;
+				}
+
+				/* compute how much left is available in the buffer */
+				ret -= parsed;
+				conn->chnk_size = 0;
 			}
 
-			/* compute how much left is available in the buffer */
-			ret -= parsed;
-			if (conn->to_recv && conn->to_recv != -1) {
-				if (conn->to_recv >= ret) {
-					parsed += ret;
-					conn->to_recv -= ret;
-					ret = 0;
+			while (ret) {
+				/* deduce currently bufferred bytes from C-L or previous partial chunk */
+				if (conn->to_recv && conn->to_recv != -1) {
+					if (conn->to_recv >= ret) {
+						conn->to_recv -= ret;
+						ret = 0;
+						break;
+					}
+					else {
+						parsed += conn->to_recv;
+						ret -= conn->to_recv;
+						conn->to_recv = 0;
+					}
 				}
-				else {
-					parsed += conn->to_recv;
-					ret -= conn->to_recv;
-					conn->to_recv = 0;
+
+				/* next data, if any, starts at <buf+parsed> for <ret>
+				 * bytes. In practice it's only the case with chunking.
+				 */
+				if (conn->flags & CF_CHNK && !conn->to_recv) {
+					/* !to_recv+CF_CHNK => reading chunk size.
+					 * We're using a local pointer to the thread-local
+					 * one to avoid heavy thread-local accesses in the
+					 * hot loop (~15% difference)!
+					 */
+					const char *bufptr = buf + parsed;
+
+					while (ret && conn->to_recv < ret) {
+						char c = *bufptr++;
+
+						ret--;
+						if (c == '\r') {
+							/* commit size into to_recv and count +1 for LF and +2
+							 * for post-data CRLF. We should have at most 3 bytes
+							 * left in the buffer (LF, CR, LF). We'll truncate them
+							 * in case there are trailers or extra data.
+							 */
+							conn->to_recv = conn->chnk_size + 1 + 2;
+							if (!conn->chnk_size) { // final chunk
+								if (ret > 3)
+									ret = 3;
+								conn->flags &= ~CF_CHNK;
+								break;
+							}
+
+							conn->chnk_size = 0;
+							if (conn->to_recv <= ret) {
+								/* contents still present in buffer */
+								bufptr += conn->to_recv;
+								ret -= conn->to_recv;
+								conn->to_recv = 0;
+							}
+						}
+						else if ((unsigned char)(c - '0') <= 9)
+							conn->chnk_size = (conn->chnk_size << 4) + c - '0';
+						else if ((unsigned char)((c|0x20) - 'a') <= 6)
+							conn->chnk_size = (conn->chnk_size << 4) + (c|0x20) - 'a' + 0xa;
+						else {
+							t->tot_perr++;
+							goto kill_conn;
+						}
+					}
+					parsed = bufptr - buf;
 				}
 			}
-
-			/* next data, if any, starts at <buf+parsed> for <ret>
-			 * bytes. In practice it's only the case with chunking.
-			 */
 		}
 
 		loops = 3;
@@ -768,6 +832,12 @@ void handle_conn(struct thread *t, struct conn *conn)
 			t->tot_rcvd += ret;
 			if (conn->to_recv != ~0)
 				conn->to_recv -= ret;
+		}
+
+		if (conn->flags & CF_CHNK) {
+			/* parsing in progress, need more data */
+			cant_recv(conn);
+			goto wait_io;
 		}
 
 		/* we've reached the end */
