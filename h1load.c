@@ -727,9 +727,9 @@ void handle_conn(struct thread *t, struct conn *conn)
 				conn->chnk_size = 0;
 			}
 
-			while (ret) {
+			while (ret && conn->to_recv != -1) {
 				/* deduce currently bufferred bytes from C-L or previous partial chunk */
-				if (conn->to_recv && conn->to_recv != -1) {
+				if (conn->to_recv) {
 					if (conn->to_recv >= ret) {
 						conn->to_recv -= ret;
 						ret = 0;
