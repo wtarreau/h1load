@@ -416,6 +416,7 @@ struct conn *new_conn()
 		conn->flags = 0;
 		conn->state = CS_NEW;
 		conn->expire = tv_unset();
+		conn->req_date = tv_unset();
 		conn->tot_req = 0;
 	}
 	return conn;
@@ -744,6 +745,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 		}
 
 		t->tot_sent += ret;
+		conn->req_date = t->now;
 
 		/* nothing more to send, wait for response */
 		stop_send(conn);
