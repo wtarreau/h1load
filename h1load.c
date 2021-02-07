@@ -175,7 +175,7 @@ int arg_ovre = 0;     // overhead correction, extra bytes
 int arg_ovrp = 0;     // overhead correction, per-payload size
 int arg_slow = 0;     // slow start: delay in milliseconds
 int arg_serr = 0;     // stop on first error
-int arg_long = 0;     // long output format
+int arg_long = 0;     // long output format; 2=raw values
 char *arg_url;
 char *arg_hdr;
 
@@ -1180,7 +1180,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -T <time>     think time after a response (0)\n"
 	    "  -H \"foo:bar\"  adds this header name and value\n"
 	    "  -O extra/payl overhead: #extra bytes per payload size\n"
-	    "  -l            enable long output format\n"
+	    "  -l            enable long output format; double for raw values\n"
 	    "  -e            stop upon first connection error\n"
 	    "  -F            merge send() with connect's ACK\n"
 	    "  -I            use HEAD instead of GET\n"
@@ -1446,14 +1446,35 @@ void summary()
 		bytes += small_pkt * arg_ovre;
 	}
 
-	printf("%s ", human_number((tot_conn - prev_totc) / interval));
-	printf("%s ", human_number((tot_req  - prev_totr) / interval));
-	if (arg_long)
+	if (arg_long >= 2)
+		printf("%.1f ", (tot_conn - prev_totc) / interval);
+	else
+		printf("%s ", human_number((tot_conn - prev_totc) / interval));
+
+	if (arg_long >= 2)
+		printf("%.1f ", (tot_req  - prev_totr) / interval);
+	else
+		printf("%s ", human_number((tot_req  - prev_totr) / interval));
+
+	if (arg_long >= 2)
+		printf("%.1f ", bytes / interval);
+	else if (arg_long)
 		printf("%s ", human_number(bytes / interval));
-	printf("%s ", human_number(bytes * 8 / interval));
-	printf("%s ", tot_fbs == prev_fbs ? "   -  " :
-	       short_delay_str((tot_ttfb - prev_ttfb) / (double)(tot_fbs - prev_fbs)));
-	if (arg_long)
+
+	if (arg_long >= 2)
+		printf("%.1f ", bytes * 8 / interval);
+	else
+		printf("%s ", human_number(bytes * 8 / interval));
+
+	if (arg_long >= 2)
+		printf("%.1f ", tot_fbs == prev_fbs ? 0.0 : (tot_ttfb - prev_ttfb) / (double)(tot_fbs - prev_fbs));
+	else
+		printf("%s ", tot_fbs == prev_fbs ? "   -  " :
+		       short_delay_str((tot_ttfb - prev_ttfb) / (double)(tot_fbs - prev_fbs)));
+
+	if (arg_long >= 2)
+		printf("%.1f ", tot_lbs == prev_lbs ? 0.0 : (tot_ttlb - prev_ttlb) / (double)(tot_lbs - prev_lbs));
+	else if (arg_long)
 		printf("%s ", tot_lbs == prev_lbs ? "   -  " :
 		       short_delay_str((tot_ttlb - prev_ttlb) / (double)(tot_lbs - prev_lbs)));
 	putchar('\n');
@@ -1580,7 +1601,9 @@ int main(int argc, char **argv)
 			argv++; argc--;
 		}
 		else if (strcmp(argv[0], "-l") == 0)
-			arg_long = 1;
+			arg_long++;
+		else if (strcmp(argv[0], "-ll") == 0)
+			arg_long = 2;
 		else if (strcmp(argv[0], "-e") == 0)
 			arg_serr = 1;
 		else if (strcmp(argv[0], "-F") == 0)
@@ -1668,7 +1691,9 @@ int main(int argc, char **argv)
 	/* OK, all threads are ready now */
 	__sync_fetch_and_and(&running, ~THR_SYNSTART);
 
-	if (arg_long)
+	if (arg_long >= 2)
+		printf("#_____time conns tot_conn  tot_req      tot_bytes    err cps rps Bps bps ttfb(us) ttlb(us)\n");
+	else if (arg_long)
 		printf("#     time conns tot_conn  tot_req      tot_bytes    err  cps  rps  Bps  bps   ttfb   ttlb\n");
 	else
 		printf("#     time conns tot_conn  tot_req      tot_bytes    err  cps  rps  bps   ttfb\n");
