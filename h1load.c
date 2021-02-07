@@ -1427,8 +1427,8 @@ void summary()
 	else
 		interval = 1.0;
 
-	printf("%9lu %5lu %8llu %8llu %14llu %6lu ",
-	       (unsigned long)now.tv_sec,
+	printf("%10lu %5lu %8llu %8llu %14llu %6lu ",
+	       arg_long ? (unsigned long)now.tv_sec : (unsigned long)(now.tv_sec - start_date.tv_sec),
 	       (unsigned long)cur_conn,
 	       (unsigned long long)tot_conn,
 	       (unsigned long long)tot_req,
