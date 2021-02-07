@@ -1465,7 +1465,7 @@ int main(int argc, char **argv)
 		if (running & THR_STOP_ALL)
 			break;
 		gettimeofday(&now, NULL);
-		if (arg_dura && tv_cmp(tv_ms_add(start_date, arg_dura * 1000), now) <= 0)
+		if (arg_dura && tv_cmp(stop_date, now) <= 0)
 			break;
 		summary();
 	}
