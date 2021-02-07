@@ -134,6 +134,10 @@ struct thread {
 	uint64_t tot_perr;           // total protocol errors on this thread
 	uint64_t tot_cto;            // total connection timeouts on this thread
 	uint64_t tot_xto;            // total xfer timeouts on this thread
+	uint64_t tot_fbs;            // total number of ttfb samples
+	uint64_t tot_ttfb;           // total time-to-first-byte (us)
+	uint64_t tot_lbs;            // total number of ttlb samples
+	uint64_t tot_ttlb;           // total time-to-last-byte (us)
 	int epollfd;                 // poller's FD
 	int start_len;               // request's start line's length
 	char *start_line;            // copy of the request's start line to be sent
@@ -630,6 +634,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 	int expired = !!(conn->flags & CF_EXP);
 	int loops;
 	int ret, parsed;
+	uint64_t ttfb, ttlb;     // time-to-first-byte, time-to-last-byte (in us)
 
 	if (conn->state == CS_CON) {
 		if (conn->flags & CF_ERR) {
@@ -823,6 +828,9 @@ void handle_conn(struct thread *t, struct conn *conn)
 					t->tot_done++;
 					goto kill_conn;
 				}
+				ttfb = tv_us(tv_diff(conn->req_date, t->now));
+				t->tot_ttfb += ttfb;
+				t->tot_fbs++;
 
 				/* compute how much left is available in the buffer */
 				ret -= parsed;
@@ -947,6 +955,9 @@ void handle_conn(struct thread *t, struct conn *conn)
 		}
 
 		/* we've reached the end */
+		ttlb = tv_us(tv_diff(conn->req_date, t->now));
+		t->tot_ttlb += ttlb;
+		t->tot_lbs++;
 		t->tot_done++;
 
 		if (arg_thnk) {
@@ -1024,6 +1035,12 @@ void handle_conn(struct thread *t, struct conn *conn)
  kill_conn:
 	setsockopt(conn->fd, SOL_SOCKET, SO_LINGER, &nolinger, sizeof(nolinger));
  close_conn:
+	if (conn->state == CS_END) {
+		ttlb = tv_us(tv_diff(conn->req_date, t->now));
+		t->tot_ttlb += ttlb;
+		t->tot_lbs++;
+	}
+
 	close(conn->fd);
 	if (conn->state == CS_SND || conn->state == CS_RCV)
 		t->cur_req--;
