@@ -223,6 +223,12 @@ static inline int tv_isset(struct timeval tv)
 	return tv.tv_usec != ~0;
 }
 
+/* returns the interval in microseconds, which must be set */
+static inline uint64_t tv_us(const struct timeval tv)
+{
+	return tv.tv_sec * (uint64_t)1000000 + tv.tv_usec;
+}
+
 /* returns true if <a> is before <b>, taking account unsets */
 static inline int tv_isbefore(const struct timeval a, const struct timeval b)
 {
