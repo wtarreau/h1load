@@ -138,6 +138,8 @@ struct thread {
 	uint64_t tot_ttfb;           // total time-to-first-byte (us)
 	uint64_t tot_lbs;            // total number of ttlb samples
 	uint64_t tot_ttlb;           // total time-to-last-byte (us)
+	uint64_t *ttfb_pct;          // counts per ttfb value for percentile
+	uint64_t *ttlb_pct;          // counts per ttlb value for percentile
 	int epollfd;                 // poller's FD
 	int start_len;               // request's start line's length
 	char *start_line;            // copy of the request's start line to be sent
@@ -176,6 +178,7 @@ int arg_ovrp = 0;     // overhead correction, per-payload size
 int arg_slow = 0;     // slow start: delay in milliseconds
 int arg_serr = 0;     // stop on first error
 int arg_long = 0;     // long output format; 2=raw values
+int arg_pctl = 0;     // report percentiles
 char *arg_url;
 char *arg_hdr;
 
@@ -197,6 +200,50 @@ volatile unsigned long global_req = 0; // global req counter to sync threads.
 __thread struct thread *thr;
 __thread char buf[65536];
 
+/* unsigned 16-bit float:
+ *    b15..b11 = 5-bit exponent
+ *    b10..b0  = 11-bit mantissa
+ *
+ * Numbers below 1024 are like usual denormals in that they are the only ones
+ * without bit 10 set. Values 0..2047 are mapped to the same encoding. Values
+ * 2^42 and above are infinite and all encoded as 0xFFFF.
+ */
+typedef uint16_t uf16_t;
+
+/* make a uf16 from an exponent and a mantissa */
+static inline uf16_t uf16(uint8_t e, uint16_t m)
+{
+	return ((uf16_t)e << 11) + m;
+}
+
+/* converts any value between 0 and 2^42 to a uf16 */
+static inline uf16_t to_uf16(uint64_t v)
+{
+	uint64_t max = (uint64_t)0x7FF << 31;
+	int8_t e;
+
+	v = (v <= max) ? v : max;
+
+	if (sizeof(long) == 8) {
+		e = __builtin_clzl(v) ^ 63;
+	} else {
+		if (v >> 32)
+			e = 32 + (__builtin_clzl(v >> 32) ^ 31);
+		else
+			e = __builtin_clzl(v) ^ 31;
+	}
+
+	e -= 10;
+	if (e < 0)
+		e = 0;
+	v >>= e;
+	return uf16(e, v);
+}
+
+static inline uint64_t from_uf16(uf16_t u)
+{
+	return (uint64_t)(u & 0x7FF) << (u >> 11);
+}
 
 /************ time manipulation functions ***************/
 
@@ -831,6 +878,8 @@ void handle_conn(struct thread *t, struct conn *conn)
 				}
 				ttfb = tv_us(tv_diff(conn->req_date, t->now));
 				t->tot_ttfb += ttfb;
+				if (arg_pctl)
+					t->ttfb_pct[to_uf16(ttfb)]++;
 				t->tot_fbs++;
 
 				/* compute how much left is available in the buffer */
@@ -958,6 +1007,8 @@ void handle_conn(struct thread *t, struct conn *conn)
 		/* we've reached the end */
 		ttlb = tv_us(tv_diff(conn->req_date, t->now));
 		t->tot_ttlb += ttlb;
+		if (arg_pctl)
+			t->ttlb_pct[to_uf16(ttlb)]++;
 		t->tot_lbs++;
 		t->tot_done++;
 
@@ -1039,6 +1090,8 @@ void handle_conn(struct thread *t, struct conn *conn)
 	if (conn->state == CS_END) {
 		ttlb = tv_us(tv_diff(conn->req_date, t->now));
 		t->tot_ttlb += ttlb;
+		if (arg_pctl)
+			t->ttlb_pct[to_uf16(ttlb)]++;
 		t->tot_lbs++;
 	}
 
@@ -1181,6 +1234,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -H \"foo:bar\"  adds this header name and value\n"
 	    "  -O extra/payl overhead: #extra bytes per payload size\n"
 	    "  -l            enable long output format; double for raw values\n"
+	    "  -P            report ttfb/ttlb percentiles at the end\n"
 	    "  -e            stop upon first connection error\n"
 	    "  -F            merge send() with connect's ACK\n"
 	    "  -I            use HEAD instead of GET\n"
@@ -1279,6 +1333,15 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss)
 			return -1;
 		}
 		threads[th].hdr_len = strlen(threads[th].hdr_block);
+	}
+
+	if (arg_pctl) {
+		threads[th].ttfb_pct = calloc(1 << 16, sizeof(*threads[th].ttfb_pct));
+		threads[th].ttlb_pct = calloc(1 << 16, sizeof(*threads[th].ttlb_pct));
+		if (!threads[th].ttfb_pct || !threads[th].ttlb_pct) {
+			err->len = snprintf(err->msg, err->size, "Failed to allocate percentile counters for thread %d\n", th);
+			return -1;
+		}
 	}
 
 	threads[th].epollfd = epoll_create(1);
@@ -1489,6 +1552,67 @@ void summary()
 	prev_date = now;
 }
 
+/* report ttfb and ttlb percentiles */
+void report_percentiles()
+{
+	uint64_t tot_ttfb, tot_ttlb;
+	uint64_t cur_ttfb, cur_ttlb;
+	int ttfb_idx, ttlb_idx;
+	double points[100];
+	double pct;
+	int nbpts;
+	int i, t;
+
+	/* create 64 entries from 10 to 100% */
+	nbpts = 0; pct = 0.1;
+	for (; (points[nbpts] = pct) < 0.50000; nbpts++, pct += 0.1);
+	for (; (points[nbpts] = pct) < 0.80000; nbpts++, pct += 0.05);
+	for (; (points[nbpts] = pct) < 0.90000; nbpts++, pct += 0.02);
+	for (; (points[nbpts] = pct) < 0.95000; nbpts++, pct += 0.01);
+	for (; (points[nbpts] = pct) < 0.99000; nbpts++, pct += 0.005);
+	for (; (points[nbpts] = pct) < 0.99500; nbpts++, pct += 0.001);
+	for (; (points[nbpts] = pct) < 0.99900; nbpts++, pct += 0.0005);
+	for (; (points[nbpts] = pct) < 0.99950; nbpts++, pct += 0.0001);
+	for (; (points[nbpts] = pct) < 0.99990; nbpts++, pct += 0.00005);
+	for (; (points[nbpts] = pct) < 0.99995; nbpts++, pct += 0.00001);
+	for (; (points[nbpts] = pct) <= 1.00000; nbpts++, pct += 0.000005);
+
+	/* first, let's merge all counters into the first thread's */
+	for (t = 1; t < arg_thrd; t++) {
+		for (i = 0; i < 65536; i++) {
+			threads[0].ttfb_pct[i] += threads[t].ttfb_pct[i];
+			threads[0].ttlb_pct[i] += threads[t].ttlb_pct[i];
+		}
+	}
+
+	tot_ttfb = tot_ttlb = 0;
+	for (i = 0; i < 65536; i++) {
+		tot_ttfb += threads[0].ttfb_pct[i];
+		tot_ttlb += threads[0].ttlb_pct[i];
+	}
+
+	printf("#======= Percentiles for time-to-first-byte and time-to-last-byte =======\n");
+	printf("# use $3:$5 $3:$7 with logscale X\n");
+	printf("# $1     $2      $3         $4       $5         $6       $7\n");
+	printf("#pctl   tail   invtail   ttfbcnt ttfb(ms)   ttlbcnt ttlb(ms)\n");
+
+	cur_ttfb = cur_ttlb = 0;
+	ttfb_idx = ttlb_idx = 0;
+	for (i = 0; i < nbpts; i++) {
+		while (ttfb_idx < 65536 && cur_ttfb + threads[0].ttfb_pct[ttfb_idx] < points[i] * tot_ttfb)
+			cur_ttfb += threads[0].ttfb_pct[ttfb_idx++];
+
+		while (ttlb_idx < 65536 && cur_ttlb + threads[0].ttlb_pct[ttlb_idx] < points[i] * tot_ttlb)
+			cur_ttlb += threads[0].ttlb_pct[ttlb_idx++];
+
+		printf("%-7g %-6g %-7g %9llu %8g %9llu %8g\n",
+		       points[i]*100.0, 100.0*(1.0-points[i]),
+		       points[i] == 1.0 ? 250000 : 1.0/(1.0-points[i]),
+		       (unsigned long long)cur_ttfb, (double)from_uf16(ttfb_idx) / 1000.0,
+		       (unsigned long long)cur_ttlb, (double)from_uf16(ttlb_idx) / 1000.0);
+	}
+}
+
 /* appends <txt1>, <txt2> and <txt3> to pfx when not NULL. <str> may also be
  * NULL, in this case it will be allocated first. If everything is empty, an
  * empty string will still be returned. NULL is returned on allocation error.
@@ -1604,6 +1728,8 @@ int main(int argc, char **argv)
 			arg_long++;
 		else if (strcmp(argv[0], "-ll") == 0)
 			arg_long = 2;
+		else if (strcmp(argv[0], "-P") == 0)
+			arg_pctl++;
 		else if (strcmp(argv[0], "-e") == 0)
 			arg_serr = 1;
 		else if (strcmp(argv[0], "-F") == 0)
@@ -1716,5 +1842,7 @@ int main(int argc, char **argv)
 
 	gettimeofday(&now, NULL);
 	summary();
+	if (arg_pctl)
+		report_percentiles();
 	return 0;
 }
