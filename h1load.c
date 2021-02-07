@@ -195,27 +195,98 @@ __thread char buf[65536];
 
 /************ time manipulation functions ***************/
 
-/* returns non-zero if <tv> not set (at least one fields not 0) */
-static inline int tv_isset(const struct timeval tv)
+/* timeval is not set */
+#define TV_UNSET ((struct timeval){ .tv_sec = 0, .tv_usec = ~0 })
+
+/* make a timeval from <sec>, <usec> */
+static inline struct timeval tv_set(time_t sec, suseconds_t usec)
 {
-	return !!(tv.tv_sec | tv.tv_usec);
+	struct timeval ret = { .tv_sec = sec, .tv_usec = usec };
+	return ret;
 }
 
-/* Returns <0 if tv1<tv2, 0 if tv1==tv2, >0 if tv1>tv2 */
-static inline int tv_cmp(const struct timeval tv1, const struct timeval tv2)
+/* used to unset a timeout */
+static inline struct timeval tv_unset()
 {
-	if ((unsigned)tv1.tv_sec < (unsigned)tv2.tv_sec)
-		return -1;
-	else if ((unsigned)tv1.tv_sec > (unsigned)tv2.tv_sec)
-		return 1;
-	else if ((unsigned)tv1.tv_usec < (unsigned)tv2.tv_usec)
-		return -1;
-	else if ((unsigned)tv1.tv_usec > (unsigned)tv2.tv_usec)
-		return 1;
+	return tv_set(0, ~0);
+}
+
+/* used to zero a timeval */
+static inline struct timeval tv_zero()
+{
+	return tv_set(0, 0);
+}
+
+/* returns true if the timeval is set */
+static inline int tv_isset(struct timeval tv)
+{
+	return tv.tv_usec != ~0;
+}
+
+/* returns true if <a> is before <b>, taking account unsets */
+static inline int tv_isbefore(const struct timeval a, const struct timeval b)
+{
+	return !tv_isset(b) ? 1 :
+	       !tv_isset(a) ? 0 :
+	       ( a.tv_sec < b.tv_sec || (a.tv_sec == b.tv_sec && a.tv_usec < b.tv_usec));
+}
+
+/* returns the lowest of the two timers, for use in delay computation */
+static inline struct timeval tv_min(const struct timeval a, const struct timeval b)
+{
+	if (tv_isbefore(a, b))
+		return a;
 	else
-		return 0;
+		return b;
 }
 
+/* returns the normalized sum of the <from> plus <off> */
+static inline struct timeval tv_add(const struct timeval from, const struct timeval off)
+{
+	struct timeval ret;
+
+	ret.tv_sec  = from.tv_sec  + off.tv_sec;
+	ret.tv_usec = from.tv_usec + off.tv_usec;
+
+	if (ret.tv_usec >= 1000000) {
+		ret.tv_usec -= 1000000;
+		ret.tv_sec  += 1;
+	}
+	return ret;
+}
+
+/* returns the normalized sum of <from> plus <ms> milliseconds */
+static inline struct timeval tv_ms_add(const struct timeval from, unsigned int ms)
+{
+	struct timeval tv;
+
+	tv.tv_usec = from.tv_usec + (ms % 1000) * 1000;
+	tv.tv_sec  = from.tv_sec  + (ms / 1000);
+	if (tv.tv_usec >= 1000000) {
+		tv.tv_usec -= 1000000;
+		tv.tv_sec++;
+	}
+	return tv;
+}
+
+/* returns the delay between <past> and <now> or zero if <past> is after <now> */
+static inline struct timeval tv_diff(const struct timeval past, const struct timeval now)
+{
+	struct timeval ret = { .tv_sec = 0, .tv_usec = 0 };
+
+	if (tv_isbefore(past, now)) {
+		ret.tv_sec  = now.tv_sec  - past.tv_sec;
+		ret.tv_usec = now.tv_usec - past.tv_usec;
+
+		if ((signed)ret.tv_usec < 0) { // overflow
+			ret.tv_usec += 1000000;
+			ret.tv_sec  -= 1;
+		}
+	}
+	return ret;
+}
+
+/* returns the time remaining between <tv1> and <tv2>, or zero if passed */
 static inline struct timeval tv_remain(const struct timeval tv1, const struct timeval tv2)
 {
 	struct timeval tv;
@@ -237,34 +308,15 @@ static inline struct timeval tv_remain(const struct timeval tv1, const struct ti
 	return tv;
 }
 
-static inline unsigned long tv_ms_elapsed(const struct timeval tv1, const struct timeval tv2)
-{
-	unsigned long ret;
-
-	ret  = ((signed long)(tv2.tv_sec  - tv1.tv_sec))  * 1000;
-	ret += (((signed long)(tv2.tv_usec - tv1.tv_usec)) + 999) / 1000;
-	return ret;
-}
-
+/* returns the time remaining between <tv1> and <tv2> in milliseconds rounded
+ * up to the next millisecond, or zero if passed.
+ */
 static inline unsigned long tv_ms_remain(const struct timeval tv1, const struct timeval tv2)
-{
-	if (tv_cmp(tv1, tv2) >= 0)
-		return 0; /* event elapsed */
-
-	return tv_ms_elapsed(tv1, tv2);
-}
-
-static inline struct timeval tv_ms_add(const struct timeval from, unsigned int ms)
 {
 	struct timeval tv;
 
-	tv.tv_usec = from.tv_usec + (ms % 1000) * 1000;
-	tv.tv_sec  = from.tv_sec  + (ms / 1000);
-	if (tv.tv_usec >= 1000000) {
-		tv.tv_usec -= 1000000;
-		tv.tv_sec++;
-	}
-	return tv;
+	tv = tv_remain(tv1, tv2);
+	return tv.tv_sec * 1000 + (tv.tv_usec + 999) / 1000;
 }
 
 
@@ -363,7 +415,7 @@ struct conn *new_conn()
 	if (conn) {
 		conn->flags = 0;
 		conn->state = CS_NEW;
-		conn->expire = (struct timeval){ .tv_sec = 0, .tv_usec = 0 };
+		conn->expire = tv_unset();
 		conn->tot_req = 0;
 	}
 	return conn;
@@ -1272,7 +1324,7 @@ void summary()
 	int th;
 	uint64_t cur_conn, tot_conn, tot_req, tot_err, tot_rcvd, bytes;
 	static uint64_t prev_totc, prev_totr, prev_totb;
-	static struct timeval prev_date;
+	static struct timeval prev_date = TV_UNSET;
 	double interval;
 
 	cur_conn = tot_conn = tot_req = tot_err = tot_rcvd = 0;
@@ -1292,7 +1344,7 @@ void summary()
 	     (prev_totc == tot_conn) && (prev_totr == tot_req) && (prev_totb == tot_rcvd))
 		return;
 
-	if (prev_date.tv_sec)
+	if (tv_isset(prev_date))
 		interval = tv_ms_remain(prev_date, now) / 1000.0;
 	else
 		interval = 1.0;
@@ -1517,7 +1569,7 @@ int main(int argc, char **argv)
 	if (arg_dura)
 		stop_date = tv_ms_add(start_date, arg_dura * 1000);
 	else
-		stop_date = (struct timeval){ .tv_sec = 0, .tv_usec = 0 };
+		stop_date = tv_unset();
 
 	/* wait for all threads to start (or abort) */
 	while ((running & THR_COUNT) < arg_thrd)
@@ -1532,8 +1584,7 @@ int main(int argc, char **argv)
 		sleep(1);
 		gettimeofday(&now, NULL);
 
-		if ((arg_reqs > 0 && global_req >= arg_reqs) ||
-		    (arg_dura && tv_cmp(stop_date, now) <= 0))
+		if ((arg_reqs > 0 && global_req >= arg_reqs) || !tv_isbefore(now, stop_date))
 			__sync_fetch_and_or(&running, THR_ENDING);
 
 		summary();
