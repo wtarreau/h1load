@@ -175,6 +175,7 @@ int arg_ovre = 0;     // overhead correction, extra bytes
 int arg_ovrp = 0;     // overhead correction, per-payload size
 int arg_slow = 0;     // slow start: delay in milliseconds
 int arg_serr = 0;     // stop on first error
+int arg_long = 0;     // long output format
 char *arg_url;
 char *arg_hdr;
 
@@ -1179,6 +1180,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -T <time>     think time after a response (0)\n"
 	    "  -H \"foo:bar\"  adds this header name and value\n"
 	    "  -O extra/payl overhead: #extra bytes per payload size\n"
+	    "  -l            enable long output format\n"
 	    "  -e            stop upon first connection error\n"
 	    "  -F            merge send() with connect's ACK\n"
 	    "  -I            use HEAD instead of GET\n"
@@ -1343,22 +1345,73 @@ const char *human_number(double x)
 	return str;
 }
 
+/* Builds a string from the time interval <us> (in microsecond), made of a 5
+ * digit value followed by a unit among 'n', 'u', 'm', 's' for "nanoseconds",
+ * "microseconds", "milliseconds", "seconds" respectively. Large values will
+ * stick to the seconds unit and will enlarge the output, though this is not
+ * expected to be a common case. This way the output can be converted back
+ * into integer values without too much hassle (e.g. for graphs). The string
+ * is locally allocated so this must not be used by multiple threads. Negative
+ * values are reported as "  -  ".
+ */
+const char *short_delay_str(double us)
+{
+	static char str[20];
+	char unit;
+
+	if (us <= 0.0) {
+		return "   -  ";
+	}
+	else if (us < 1.0) {
+		us *= 1000.0;
+		unit = 'n';
+	}
+	else if (us < 1000.0) {
+		unit = 'u';
+	}
+	else if (us < 1000000.0) {
+		us /= 1000.0;
+		unit = 'm';
+	}
+	else {
+		us /= 1000000.0;
+		unit = 's';
+	}
+
+	if (us < 10.0)
+		snprintf(str, sizeof(str), "%1.3f%c", us, unit);
+	else if (us < 100.0)
+		snprintf(str, sizeof(str), "%2.2f%c", us, unit);
+	else if (us < 1000.0)
+		snprintf(str, sizeof(str), "%3.1f%c", us, unit);
+	else
+		snprintf(str, sizeof(str), "%5f%c", us, unit);
+	return str;
+}
+
 /* reports current date (now) and aggragated stats */
 void summary()
 {
 	int th;
 	uint64_t cur_conn, tot_conn, tot_req, tot_err, tot_rcvd, bytes;
+	uint64_t tot_ttfb, tot_ttlb, tot_fbs, tot_lbs;
 	static uint64_t prev_totc, prev_totr, prev_totb;
+	static uint64_t prev_ttfb, prev_ttlb, prev_fbs, prev_lbs;
 	static struct timeval prev_date = TV_UNSET;
 	double interval;
 
 	cur_conn = tot_conn = tot_req = tot_err = tot_rcvd = 0;
+	tot_ttfb = tot_ttlb = tot_fbs = tot_lbs = 0;
 	for (th = 0; th < arg_thrd; th++) {
 		cur_conn += threads[th].curconn;
 		tot_conn += threads[th].tot_conn;
 		tot_req  += threads[th].tot_done;
 		tot_err  += threads[th].tot_serr + threads[th].tot_cerr + threads[th].tot_xerr + threads[th].tot_perr;
 		tot_rcvd += threads[th].tot_rcvd;
+		tot_ttfb += threads[th].tot_ttfb;
+		tot_ttlb += threads[th].tot_ttlb;
+		tot_fbs  += threads[th].tot_fbs;
+		tot_lbs  += threads[th].tot_lbs;
 	}
 
 	/* when called after having stopped, check if we need to dump a final
@@ -1395,13 +1448,23 @@ void summary()
 
 	printf("%s ", human_number((tot_conn - prev_totc) / interval));
 	printf("%s ", human_number((tot_req  - prev_totr) / interval));
-	printf("%s ", human_number(bytes / interval));
+	if (arg_long)
+		printf("%s ", human_number(bytes / interval));
 	printf("%s ", human_number(bytes * 8 / interval));
+	printf("%s ", tot_fbs == prev_fbs ? "   -  " :
+	       short_delay_str((tot_ttfb - prev_ttfb) / (double)(tot_fbs - prev_fbs)));
+	if (arg_long)
+		printf("%s ", tot_lbs == prev_lbs ? "   -  " :
+		       short_delay_str((tot_ttlb - prev_ttlb) / (double)(tot_lbs - prev_lbs)));
 	putchar('\n');
 
 	prev_totc = tot_conn;
 	prev_totr = tot_req;
 	prev_totb = tot_rcvd;
+	prev_fbs  = tot_fbs;
+	prev_lbs  = tot_lbs;
+	prev_ttfb = tot_ttfb;
+	prev_ttlb = tot_ttlb;
 	prev_date = now;
 }
 
@@ -1516,6 +1579,8 @@ int main(int argc, char **argv)
 			arg_dura = atoi(argv[1]);
 			argv++; argc--;
 		}
+		else if (strcmp(argv[0], "-l") == 0)
+			arg_long = 1;
 		else if (strcmp(argv[0], "-e") == 0)
 			arg_serr = 1;
 		else if (strcmp(argv[0], "-F") == 0)
@@ -1603,7 +1668,10 @@ int main(int argc, char **argv)
 	/* OK, all threads are ready now */
 	__sync_fetch_and_and(&running, ~THR_SYNSTART);
 
-	printf("#     time conns tot_conn  tot_req      tot_bytes    err  cps  rps  Bps  bps\n");
+	if (arg_long)
+		printf("#     time conns tot_conn  tot_req      tot_bytes    err  cps  rps  Bps  bps   ttfb   ttlb\n");
+	else
+		printf("#     time conns tot_conn  tot_req      tot_bytes    err  cps  rps  bps   ttfb\n");
 
 	while (running & THR_COUNT) {
 		sleep(1);
