@@ -92,6 +92,7 @@ struct errmsg {
 enum cstate {
 	CS_NEW = 0,   // just allocated
 	CS_CON,       // pending connection attempt
+	CS_REQ,       // count a new request and check vs global limits
 	CS_SND,       // send attempt (headers or body)
 	CS_RCV,       // recv attempt (headers or body)
 	CS_THK,       // think time
@@ -395,7 +396,7 @@ struct conn *add_connection(struct thread *t)
 		LIST_APPEND(&t->iq, &conn->link);
 	}
 	else {
-		conn->state = CS_SND;
+		conn->state = CS_REQ;
 		LIST_APPEND(&t->iq, &conn->link);
 	}
 
@@ -583,11 +584,28 @@ void handle_conn(struct thread *t, struct conn *conn)
 		}
 
 		/* finally ready, fall through */
+		conn->state = CS_REQ;
+	}
+
+	if (conn->state == CS_REQ) {
+	send_again:
+		/* check request counters and increment counts exactly once per
+		 * request. We silently abort on I/O errors on idle connections
+		 * and prepare to send the request on a new connection instead.
+		 */
+		if (conn->flags & CF_ERR)
+			goto close_conn;
+
+		if (!may_add_req())
+			goto kill_conn;
+
+		conn->tot_req++;
+		t->tot_req++;
 		conn->state = CS_SND;
 	}
 
 	if (conn->state == CS_SND) {
-	send_again:
+		/* try to prepare a request and send it */
 		if (conn->flags & CF_ERR) {
 			t->tot_xerr++;
 			goto close_conn;
@@ -602,13 +620,8 @@ void handle_conn(struct thread *t, struct conn *conn)
 			goto wait_io;
 		}
 
-		if (!may_add_req())
-			goto kill_conn;
-
 		conn->flags &= ~(CF_HEAD | CF_V11 | CF_EXP);
 		conn->to_recv = 0; // wait for headers
-		conn->tot_req++;
-		t->tot_req++;
 
 		/* check for HEAD */
 		if (*(uint32_t *)t->start_line == ntohl(0x48454144))
@@ -849,7 +862,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 			conn->state = CS_THK;
 		}
 		else {
-			conn->state = CS_SND;
+			conn->state = CS_REQ;
 			stop_recv(conn);
 			goto send_again;
 		}
@@ -885,7 +898,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 			LIST_DELETE(&conn->link);
 			LIST_APPEND(&t->wq, &conn->link);
 			conn->expire = tv_ms_add(t->now, arg_wait);
-			conn->state = CS_SND;
+			conn->state = CS_REQ;
 			stop_recv(conn);
 			goto send_again;
 		}
