@@ -177,8 +177,11 @@ static char *start_line;
 static char *hdr_block;
 
 /* global state */
-#define THR_STOP_ALL 0x80000000
-volatile uint32_t running = 0; // # = running threads, b31 set = must stop now!
+#define THR_STOP_ALL 0x80000000  // set on running: must stop now!
+#define THR_ENDING   0x40000000  // set on running: end once done
+#define THR_SYNSTART 0x20000000  // set on running: threads wait for 0
+#define THR_COUNT    0x0FFFFFFF  // mask applied to check thr count
+volatile uint32_t running = 0; // # = running threads + THR_* above
 struct thread threads[MAXTHREADS];
 struct timeval start_date, stop_date, now;
 
@@ -601,6 +604,9 @@ void handle_conn(struct thread *t, struct conn *conn)
 		if (!may_add_req())
 			goto kill_conn;
 
+		if (running & (THR_STOP_ALL|THR_ENDING))
+			goto kill_conn;
+
 		conn->tot_req++;
 		t->tot_req++;
 		t->cur_req++;
@@ -900,6 +906,9 @@ void handle_conn(struct thread *t, struct conn *conn)
 				goto close_conn;
 		}
 
+		if (running & THR_ENDING)
+			goto kill_conn;
+
 		if (expired) {
 			LIST_DELETE(&conn->link);
 			LIST_APPEND(&t->wq, &conn->link);
@@ -967,10 +976,10 @@ void work(void *arg)
 	thr = thread;
 
 	__sync_fetch_and_add(&running, 1);
-	while (running < arg_thrd)
+	while (running & THR_SYNSTART)
 		usleep(10000);
 
-	while (!(running & THR_STOP_ALL)) {
+	while (!(running & THR_STOP_ALL) && (!(running & THR_ENDING) || thr->cur_req)) {
 		maxconn = thr->maxconn;
 
 		if (arg_slow) {
@@ -986,7 +995,7 @@ void work(void *arg)
 		}
 
 		for (i = 0; thr->curconn < maxconn && i < 2*pollevents; i++) {
-			if (running & THR_STOP_ALL)
+			if (running & (THR_STOP_ALL|THR_ENDING))
 				break;
 			if (arg_reqs > 0 && global_req >= arg_reqs)
 				break;
@@ -997,7 +1006,7 @@ void work(void *arg)
 			handle_conn(thr, conn);
 		}
 
-		if (arg_reqs > 0 && global_req >= arg_reqs && !thr->curconn)
+		if (arg_reqs > 0 && global_req >= arg_reqs && !thr->cur_req)
 			break;
 
 		t1 = 1000; // one call per second
@@ -1251,6 +1260,14 @@ void summary()
 		tot_rcvd += threads[th].tot_rcvd;
 	}
 
+	/* when called after having stopped, check if we need to dump a final
+	 * line or not, to cover for the rare cases of the last thread
+	 * finishing just after the last summary line
+	 */
+	if (!(running & THR_COUNT) && (prev_date.tv_sec == now.tv_sec) &&
+	     (prev_totc == tot_conn) && (prev_totr == tot_req) && (prev_totb == tot_rcvd))
+		return;
+
 	if (prev_date.tv_sec)
 		interval = tv_ms_remain(prev_date, now) / 1000.0;
 	else
@@ -1462,6 +1479,7 @@ int main(int argc, char **argv)
 
 	setlinebuf(stdout);
 
+	__sync_fetch_and_or(&running, THR_SYNSTART);
 	for (th = 0; th < arg_thrd; th++) {
 		if (create_thread(th, &err, &ss) < 0) {
 			__sync_fetch_and_or(&running, THR_STOP_ALL);
@@ -1477,22 +1495,28 @@ int main(int argc, char **argv)
 	else
 		stop_date = (struct timeval){ .tv_sec = 0, .tv_usec = 0 };
 
+	/* wait for all threads to start (or abort) */
+	while ((running & THR_COUNT) < arg_thrd)
+		usleep(10000);
+
+	/* OK, all threads are ready now */
+	__sync_fetch_and_and(&running, ~THR_SYNSTART);
+
 	printf("#     time conns tot_conn  tot_req      tot_bytes    err  cps  rps  Bps  bps\n");
 
-	while (1) {
+	while (running & THR_COUNT) {
 		sleep(1);
-		if (arg_reqs > 0 && global_req >= arg_reqs)
-			break;
-		if (running & THR_STOP_ALL)
-			break;
 		gettimeofday(&now, NULL);
-		if (arg_dura && tv_cmp(stop_date, now) <= 0)
-			break;
+
+		if ((arg_reqs > 0 && global_req >= arg_reqs) ||
+		    (arg_dura && tv_cmp(stop_date, now) <= 0))
+			__sync_fetch_and_or(&running, THR_ENDING);
+
 		summary();
 	}
 
 	/* signal all threads that they must stop */
-	__sync_fetch_and_or(&running, THR_STOP_ALL);
+	__sync_fetch_and_or(&running, THR_ENDING);
 
 	for (th = 0; th < arg_thrd; th++)
 		pthread_join(threads[th].pth, NULL);
