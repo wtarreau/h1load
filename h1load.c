@@ -76,6 +76,13 @@ struct errmsg {
 	size_t len;
 };
 
+/* frequency counter, smoothed over a sliding second period */
+struct freq_ctr {
+	uint32_t curr_sec; /* start date of current period (seconds from now.tv_sec) */
+	uint32_t curr_ctr; /* cumulated value for current period */
+	uint32_t prev_ctr; /* value for last period */
+};
+
 
 /* connection flags */
 #define CF_BLKW 0x00000001    // blocked on writes
@@ -119,6 +126,8 @@ struct thread {
 	struct list rq;              // run queue: tasks to call
 	struct list iq;              // idle queue: when not anywhere else
 	struct timeval now;          // current time
+	struct freq_ctr req_rate;    // thread's measured request rate
+	struct freq_ctr conn_rate;   // thread's measured connection rate
 	uint32_t cur_req;            // number of active requests
 	/* 32-bit hole here */
 	uint32_t curconn;            // number of active connections
@@ -179,6 +188,7 @@ int arg_slow = 0;     // slow start: delay in milliseconds
 int arg_serr = 0;     // stop on first error
 int arg_long = 0;     // long output format; 2=raw values
 int arg_pctl = 0;     // report percentiles
+int arg_rate = 0;     // connection & request rate limit
 char *arg_url;
 char *arg_hdr;
 
@@ -378,6 +388,135 @@ static inline unsigned long tv_ms_remain(const struct timeval tv1, const struct 
 }
 
 
+/* Multiply the two 32-bit operands and shift the 64-bit result right 32 bits.
+ * This is used to compute fixed ratios by setting one of the operands to
+ * (2^32*ratio).
+ */
+static inline uint32_t mul32hi(uint32_t a, uint32_t b)
+{
+	return ((uint64_t)a * b + a - 1) >> 32;
+}
+
+/* read a freq counter over a 1-second period and return the event rate/s */
+uint32_t read_freq_ctr(struct freq_ctr *ctr, const struct timeval now)
+{
+	uint32_t curr, past;
+	uint32_t age;
+
+	age = now.tv_sec - ctr->curr_sec;
+	if (age > 1)
+		return 0;
+
+	curr = 0;
+	past = ctr->curr_ctr;
+	if (!age) {
+		curr = past;
+		past = ctr->prev_ctr;
+	}
+
+	if (past <= 1 && !curr)
+		return past; /* very low rate, avoid flapping */
+
+	return curr + mul32hi(past, (unsigned)(999999 - now.tv_usec) * 4294U);
+}
+
+/* returns the number of remaining events that can occur on this freq counter
+ * while respecting <freq> and taking into account that <pend> events are
+ * already known to be pending. Returns 0 if limit was reached.
+ */
+uint32_t freq_ctr_remain(struct freq_ctr *ctr, uint32_t freq, uint32_t pend, const struct timeval now)
+{
+	uint32_t curr, past;
+	uint32_t age;
+
+	curr = 0;
+	age = now.tv_sec - ctr->curr_sec;
+
+	if (age <= 1) {
+		past = ctr->curr_ctr;
+		if (!age) {
+			curr = past;
+			past = ctr->prev_ctr;
+		}
+		curr += mul32hi(past, (unsigned)(999999 - now.tv_usec) * 4294U);
+	}
+	curr += pend;
+
+	if (curr >= freq)
+		return 0;
+	return freq - curr;
+}
+
+/* return the expected wait time in ms before the next event may occur,
+ * respecting frequency <freq>, and assuming there may already be some pending
+ * events. It returns zero if we can proceed immediately, otherwise the wait
+ * time, which will be rounded down 1ms for better accuracy, with a minimum
+ * of one ms.
+ */
+uint32_t next_event_delay(struct freq_ctr *ctr, uint32_t freq, uint32_t pend, const struct timeval now)
+{
+	uint32_t curr, past;
+	uint32_t wait, age;
+
+	past = 0;
+	curr = 0;
+	age = now.tv_sec - ctr->curr_sec;
+
+	if (age <= 1) {
+		past = ctr->curr_ctr;
+		if (!age) {
+			curr = past;
+			past = ctr->prev_ctr;
+		}
+		curr += mul32hi(past, (unsigned)(999999 - now.tv_usec) * 4294U);
+	}
+	curr += pend;
+
+	if (curr < freq)
+		return 0;
+
+	/* too many events already, let's count how long to wait before they're
+	 * processed.
+	 */
+	curr = curr - freq; // number of events left after current period
+
+	/* each events takes 1/freq second or 1000/freq ms */
+
+	wait = curr * 1000 / freq;
+	if (!wait)
+		wait = 1;
+	return wait;
+}
+
+/* Rotate a frequency counter when current period is over. Must not be called
+ * during a valid period. It is important that it correctly initializes a null
+ * area.
+ */
+static inline void rotate_freq_ctr(struct freq_ctr *ctr, const struct timeval now)
+{
+	ctr->prev_ctr = ctr->curr_ctr;
+	if (now.tv_sec - ctr->curr_sec != 1) {
+		/* we missed more than one second */
+		ctr->prev_ctr = 0;
+	}
+	ctr->curr_sec = now.tv_sec;
+	ctr->curr_ctr = 0; /* leave it at the end to help gcc optimize it away */
+}
+
+/* Update a frequency counter by <inc> incremental units. It is automatically
+ * rotated if the period is over. It is important that it correctly initializes
+ * a null area.
+ */
+static inline void update_freq_ctr(struct freq_ctr *ctr, uint32_t inc, const struct timeval now)
+{
+	if (ctr->curr_sec == now.tv_sec) {
+		ctr->curr_ctr += inc;
+		return;
+	}
+	rotate_freq_ctr(ctr, now);
+	ctr->curr_ctr = inc;
+}
+
 /************ connection management **************/
 
 static inline int may_add_req()
@@ -517,6 +656,8 @@ struct conn *add_connection(struct thread *t)
 		LIST_APPEND(&t->iq, &conn->link);
 	}
 
+	if (arg_rate)
+		update_freq_ctr(&t->conn_rate, 1, t->now);
 	t->curconn++;
 	t->tot_conn++;
 	return conn;
@@ -682,6 +823,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 	int expired = !!(conn->flags & CF_EXP);
 	int loops;
 	int ret, parsed;
+	uint32_t wait_time;
 	uint64_t ttfb, ttlb;     // time-to-first-byte, time-to-last-byte (in us)
 
 	if (conn->state == CS_CON) {
@@ -723,6 +865,8 @@ void handle_conn(struct thread *t, struct conn *conn)
 		conn->tot_req++;
 		t->tot_req++;
 		t->cur_req++;
+		if (arg_rate)
+			update_freq_ctr(&t->req_rate, 1, t->now);
 		conn->state = CS_SND;
 	}
 
@@ -1011,17 +1155,28 @@ void handle_conn(struct thread *t, struct conn *conn)
 			t->ttlb_pct[to_uf16(ttlb)]++;
 		t->tot_lbs++;
 		t->tot_done++;
+		t->cur_req--;
 
-		if (arg_thnk) {
-			conn->expire = tv_ms_add(t->now, arg_thnk * (4096 - 128 + rand()%257) / 4096);
+		wait_time = 0;
+		if (arg_thnk)
+			wait_time = arg_thnk * (4096 - 128 + rand()%257) / 4096;
+
+		if (arg_rate) {
+			uint32_t max = (arg_rate + arg_thrd - 1) / arg_thrd;
+			uint32_t wait = next_event_delay(&t->req_rate, max, t->curconn - t->cur_req, t->now);
+
+			if (wait > wait_time)
+				wait_time = wait;
+		}
+
+		if (wait_time) {
+			conn->expire = tv_ms_add(t->now, wait_time);
 			LIST_DELETE(&conn->link);
 			LIST_APPEND(&t->sq, &conn->link);
 			conn->state = CS_THK;
-			t->cur_req--;
 		}
 		else {
 			conn->state = CS_REQ;
-			t->cur_req--;
 			stop_recv(conn);
 			goto send_again;
 		}
@@ -1125,6 +1280,7 @@ void work(void *arg)
 	struct thread *thread = (struct thread *)arg;
 	struct conn *conn;
 	int nbev, i;
+	int budget;
 	uint32_t maxconn;
 	unsigned long t1, t2;
 
@@ -1149,7 +1305,15 @@ void work(void *arg)
 			}
 		}
 
-		for (i = 0; thr->curconn < maxconn && i < 2*pollevents; i++) {
+		budget = -1;
+		if (arg_rate) {
+			uint32_t max = (arg_rate + arg_thrd - 1) / arg_thrd;
+			uint32_t b1 = freq_ctr_remain(&thr->conn_rate, max, 0, thr->now);
+			uint32_t b2 = freq_ctr_remain(&thr->req_rate, max, thr->curconn - thr->cur_req, thr->now);
+			budget = b1 <= b2 ? b1 : b2;
+		}
+
+		for (i = 0; budget && thr->curconn < maxconn && i < 2*pollevents; i++) {
 			if (running & (THR_STOP_ALL|THR_ENDING))
 				break;
 			if (arg_reqs > 0 && global_req >= arg_reqs)
@@ -1159,6 +1323,7 @@ void work(void *arg)
 				break;
 			/* send request or subscribe */
 			handle_conn(thr, conn);
+			budget--;
 		}
 
 		if (arg_reqs > 0 && global_req >= arg_reqs && !thr->cur_req)
@@ -1231,6 +1396,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -t <threads>  number of threads to create (1)\n"
 	    "  -w <time>     I/O timeout in milliseconds (-1)\n"
 	    "  -T <time>     think time after a response (0)\n"
+	    "  -R <rate>     limite to this many request attempts per second (0)\n"
 	    "  -H \"foo:bar\"  adds this header name and value\n"
 	    "  -O extra/payl overhead: #extra bytes per payload size\n"
 	    "  -l            enable long output format; double for raw values\n"
@@ -1717,6 +1883,12 @@ int main(int argc, char **argv)
 			if (argc < 2)
 				usage(name, 1);
 			arg_thnk = atoi(argv[1]);
+			argv++; argc--;
+		}
+		else if (strcmp(argv[0], "-R") == 0) {
+			if (argc < 2)
+				usage(name, 1);
+			arg_rate = atoi(argv[1]);
 			argv++; argc--;
 		}
 		else if (strcmp(argv[0], "-d") == 0) {
