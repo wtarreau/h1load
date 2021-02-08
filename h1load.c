@@ -1839,22 +1839,62 @@ char *str_append(char *str, const char *txt1, const char *txt2, const char *txt3
 void update_throttle()
 {
 	int duration;
-	uint32_t ratio;
+	uint32_t ratio = 0;
+	uint32_t step, steps = 10, pos, base;
 
-	if (!arg_slow) {
-		throttle = 0;
-		return;
-	}
+	if (!arg_slow)
+		goto end;
 
 	duration = tv_ms_remain(start_date, now);
+	if (duration >= arg_slow)
+		goto end;
 
-	ratio = 0;
-	if (duration < arg_slow) {
-		ratio = ((uint64_t)0xFFFFFFFFU * duration + arg_slow / 2) / arg_slow;
-		if (ratio < 1)
-			ratio = 1;
+	/* The ramp-up duration is cut into <steps> steps.
+	 * Each step shows a ramp-up during the first quarter of its
+	 * duration, and a stabilisation period during the last 3/4.
+	 * For instance, with 4 steps, we have this:
+	 *
+	 *      ramp up
+	 * |<-------------->|
+	 * |             __________
+	 * |         ___/:  :
+	 * |     ___/   ::  :
+	 * | ___/       ::  :
+	 * |/           ::  :
+	 * +------------++------------>
+	 *
+	 * Thus we have to determine the current step and the position within
+	 * this step. In order to simplify this, we'll pretend there are 4
+	 * times more steps and that only steps 0 mod 4 ramp up the load.
+	 * The throttle is stable along the last 3 quarters of a step, at the
+	 * base value of the next step.
+	 */
+
+	step = (steps * 4) * duration / arg_slow;
+	if (step & 3) {
+		ratio = (uint64_t)0xffffffffU * (step / 4 + 1) / steps + 1;
+		goto end;
 	}
 
+	/* position in ms within the current step */
+	pos = duration - step * arg_slow / (steps * 4);
+
+	/* get a ratio out of it. We divide 4* the position by the step width
+	 * (arg_slow/steps), and multiply this by 1/steps to get the relative
+	 * height vs 100%. steps cancel each other.
+	 */
+	pos = (uint64_t)0xffffffffU * pos * 4 / arg_slow;
+	base = (uint64_t)0xffffffffU * (step / 4) / steps;
+	ratio = base + pos;
+
+	//printf("base=%#x (%u)  pos=%#x (%u) tot=%#x (%u)\n",
+	//       base, mul32hi(100,base),
+	//       pos, mul32hi(100,pos),
+	//       ratio, mul32hi(100,ratio));
+
+	if (ratio < 1)
+		ratio = 1;
+ end:
 	throttle = ratio;
 }
 
