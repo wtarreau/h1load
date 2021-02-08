@@ -1163,8 +1163,31 @@ void handle_conn(struct thread *t, struct conn *conn)
 			wait_time = arg_thnk * (4096 - 128 + rand()%257) / 4096;
 
 		if (arg_rate) {
-			uint32_t max = (arg_rate + arg_thrd - 1) / arg_thrd;
-			uint32_t wait = next_event_delay(&t->req_rate, max, t->curconn - t->cur_req, t->now);
+			uint32_t max, wait;
+			uint32_t maxconn = t->maxconn;
+
+			if (throttle) {
+				maxconn = mul32hi(maxconn, throttle);
+				maxconn = maxconn ? maxconn : 1;
+			}
+
+			if (t->curconn < maxconn && throttle)
+				max = 0;
+			else if (throttle)
+				max = (mul32hi(arg_rate, throttle) + arg_thrd - 1) / arg_thrd;
+			else
+				max = (arg_rate + arg_thrd - 1) / arg_thrd;
+
+			max = max ? max : 1;
+			wait = next_event_delay(&t->req_rate, max, t->curconn - t->cur_req, t->now);
+
+			/* Wait no more than two seconds, because during the ramp-up it's
+			 * common to have low apparent frequencies and high amount of queued
+			 * events. But we do still need to wait a bit to leave enough room
+			 * for new connections.
+			 */
+			if (throttle && wait > 2000)
+				wait = 2000;
 
 			if (wait > wait_time)
 				wait_time = wait;
@@ -1300,11 +1323,24 @@ void work(void *arg)
 		}
 
 		budget = -1;
-		if (arg_rate) {
+		if (arg_rate && thr->curconn < maxconn) {
 			uint32_t max = (arg_rate + arg_thrd - 1) / arg_thrd;
-			uint32_t b1 = freq_ctr_remain(&thr->conn_rate, max, 0, thr->now);
-			uint32_t b2 = freq_ctr_remain(&thr->req_rate, max, thr->curconn - thr->cur_req, thr->now);
-			budget = b1 <= b2 ? b1 : b2;
+			uint32_t b1, b2;
+			if (throttle)
+				max = (mul32hi(arg_rate, throttle) + arg_thrd - 1) / arg_thrd;
+			else
+				max = (arg_rate + arg_thrd - 1) / arg_thrd;
+
+			max = max ? max : 1;
+			b1 = freq_ctr_remain(&thr->conn_rate, max, 0, thr->now);
+			b2 = freq_ctr_remain(&thr->req_rate, max, thr->curconn - thr->cur_req, thr->now);
+
+			/* If other connections have enough room to push requests
+			 * and we don't have all connections, we'll pass in force
+			 * to create new ones so that the other connections limit
+			 * their requests instead.
+			 */
+			budget = (!b2 || b1 <= b2) ? b1 : b2;
 		}
 
 		for (i = 0; budget && thr->curconn < maxconn && i < 2*pollevents; i++) {
