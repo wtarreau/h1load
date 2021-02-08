@@ -1174,7 +1174,7 @@ void work(void *arg)
 			t1 = t2;
 
 		if (thr->curconn < maxconn)
-			t1 = 0;
+			t1 = 1;
 
 		nbev = epoll_wait(thr->epollfd, thr->events, pollevents, t1);
 		gettimeofday(&thr->now, NULL);
