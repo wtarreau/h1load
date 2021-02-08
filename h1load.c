@@ -124,7 +124,8 @@ struct thread {
 	uint32_t curconn;            // number of active connections
 	uint32_t maxconn;            // max number of active connections
 	uint64_t tot_conn;           // total conns attempted on this thread
-	uint64_t tot_req;            // total requests on this thread
+	uint64_t tot_req;            // total requests started on this thread
+	uint64_t tot_done;           // total requests finished (successes+failures)
 	uint64_t tot_sent;           // total bytes sent on this thread
 	uint64_t tot_rcvd;           // total bytes received on this thread
 	uint64_t tot_serr;           // total socket errors on this thread
@@ -617,12 +618,14 @@ void handle_conn(struct thread *t, struct conn *conn)
 		/* try to prepare a request and send it */
 		if (conn->flags & CF_ERR) {
 			t->tot_xerr++;
+			t->tot_done++;
 			goto close_conn;
 		}
 
 		if (conn->flags & CF_BLKW) {
 			if (expired) {
 				t->tot_xto++;
+				t->tot_done++;
 				goto kill_conn;
 			}
 			cant_send(conn);
@@ -672,6 +675,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 				goto wait_io;
 			}
 			t->tot_xerr++;
+			t->tot_done++;
 			goto close_conn;
 		}
 
@@ -695,12 +699,14 @@ void handle_conn(struct thread *t, struct conn *conn)
 	if (conn->state == CS_RCV) {
 		if (conn->flags & CF_ERR) {
 			t->tot_xerr++;
+			t->tot_done++;
 			goto close_conn;
 		}
 
 		if (conn->flags & CF_BLKR) {
 			if (expired) {
 				t->tot_xto++;
+				t->tot_done++;
 				goto kill_conn;
 			}
 			cant_recv(conn);
@@ -729,6 +735,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 					goto wait_io;
 				}
 				t->tot_xerr++;
+				t->tot_done++;
 				goto close_conn;
 			}
 
@@ -741,6 +748,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 				parsed = parse_resp(conn, buf, ret);
 				if (parsed < 0) {
 					t->tot_perr++;
+					t->tot_done++;
 					goto kill_conn;
 				}
 
@@ -807,6 +815,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 							conn->chnk_size = (conn->chnk_size << 4) + (c|0x20) - 'a' + 0xa;
 						else {
 							t->tot_perr++;
+							t->tot_done++;
 							goto kill_conn;
 						}
 					}
@@ -839,6 +848,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 					/* received a shutdown, might be OK */
 					if (conn->to_recv != ~0)
 						t->tot_xerr++;
+					t->tot_done++;
 					t->cur_req--;
 					conn->state = CS_END;
 					goto close_conn;
@@ -849,6 +859,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 					goto wait_io;
 				}
 				t->tot_xerr++;
+				t->tot_done++;
 				goto close_conn;
 			}
 
@@ -864,6 +875,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 		}
 
 		/* we've reached the end */
+		t->tot_done++;
 
 		if (arg_thnk) {
 			conn->expire = tv_ms_add(t->now, arg_thnk * (4096 - 128 + rand()%257) / 4096);
@@ -1255,7 +1267,7 @@ void summary()
 	for (th = 0; th < arg_thrd; th++) {
 		cur_conn += threads[th].curconn;
 		tot_conn += threads[th].tot_conn;
-		tot_req  += threads[th].tot_req;
+		tot_req  += threads[th].tot_done;
 		tot_err  += threads[th].tot_serr + threads[th].tot_cerr + threads[th].tot_xerr + threads[th].tot_perr;
 		tot_rcvd += threads[th].tot_rcvd;
 	}
