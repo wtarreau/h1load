@@ -93,8 +93,8 @@ enum cstate {
 	CS_NEW = 0,   // just allocated
 	CS_CON,       // pending connection attempt
 	CS_REQ,       // count a new request and check vs global limits
-	CS_SND,       // send attempt (headers or body)
-	CS_RCV,       // recv attempt (headers or body)
+	CS_SND,       // send attempt (headers or body) (a req is active)
+	CS_RCV,       // recv attempt (headers or body) (a req is active)
 	CS_THK,       // think time
 	CS_END        // finished, must be freed
 };
@@ -119,6 +119,8 @@ struct thread {
 	struct list rq;              // run queue: tasks to call
 	struct list iq;              // idle queue: when not anywhere else
 	struct timeval now;          // current time
+	uint32_t cur_req;            // number of active requests
+	/* 32-bit hole here */
 	uint32_t curconn;            // number of active connections
 	uint32_t maxconn;            // max number of active connections
 	uint64_t tot_conn;           // total conns attempted on this thread
@@ -132,12 +134,12 @@ struct thread {
 	uint64_t tot_cto;            // total connection timeouts on this thread
 	uint64_t tot_xto;            // total xfer timeouts on this thread
 	int epollfd;                 // poller's FD
-	char *start_line;            // copy of the request's start line to be sent
 	int start_len;               // request's start line's length
+	char *start_line;            // copy of the request's start line to be sent
 	char *hdr_block;             // copy of the request's header block to be sent
 	int hdr_len;                 // request's header block's length
-	struct timeval start_date;   // thread's start date
 	int tid;                     // thread number
+	struct timeval start_date;   // thread's start date
 	pthread_t pth;               // the pthread descriptor
 	struct sockaddr_storage dst; // destination address
 	struct epoll_event *events;  // event buffer
@@ -601,6 +603,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 
 		conn->tot_req++;
 		t->tot_req++;
+		t->cur_req++;
 		conn->state = CS_SND;
 	}
 
@@ -830,6 +833,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 					/* received a shutdown, might be OK */
 					if (conn->to_recv != ~0)
 						t->tot_xerr++;
+					t->cur_req--;
 					conn->state = CS_END;
 					goto close_conn;
 				}
@@ -860,9 +864,11 @@ void handle_conn(struct thread *t, struct conn *conn)
 			LIST_DELETE(&conn->link);
 			LIST_APPEND(&t->sq, &conn->link);
 			conn->state = CS_THK;
+			t->cur_req--;
 		}
 		else {
 			conn->state = CS_REQ;
+			t->cur_req--;
 			stop_recv(conn);
 			goto send_again;
 		}
@@ -926,6 +932,8 @@ void handle_conn(struct thread *t, struct conn *conn)
 	setsockopt(conn->fd, SOL_SOCKET, SO_LINGER, &nolinger, sizeof(nolinger));
  close_conn:
 	close(conn->fd);
+	if (conn->state == CS_SND || conn->state == CS_RCV)
+		t->cur_req--;
 	t->curconn--;
 	LIST_DELETE(&conn->link);
 	free(conn);
