@@ -617,8 +617,14 @@ void handle_conn(struct thread *t, struct conn *conn)
 	if (conn->state == CS_SND) {
 		/* try to prepare a request and send it */
 		if (conn->flags & CF_ERR) {
-			t->tot_xerr++;
-			t->tot_done++;
+			/* only the first request of a connection sees an error
+			 * on the brutal close of a keep-alive connection, for
+			 * the other one a silent retry is required.
+			 */
+			if (conn->tot_req == 1) {
+				t->tot_xerr++;
+				t->tot_done++;
+			}
 			goto close_conn;
 		}
 
@@ -674,8 +680,14 @@ void handle_conn(struct thread *t, struct conn *conn)
 				cant_send(conn);
 				goto wait_io;
 			}
-			t->tot_xerr++;
-			t->tot_done++;
+			/* only the first request of a connection sees an error
+			 * on the brutal close of a keep-alive connection, for
+			 * the other one a silent retry is required.
+			 */
+			if (conn->tot_req == 1) {
+				t->tot_xerr++;
+				t->tot_done++;
+			}
 			goto close_conn;
 		}
 
