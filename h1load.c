@@ -122,7 +122,7 @@ struct conn {
 /* one thread */
 struct thread {
 	struct list wq;              // wait queue: I/O
-	struct list sq;              // sleep queue: sleep
+	struct list sq[32];          // sleep queue: sleep
 	struct list rq;              // run queue: tasks to call
 	struct list iq;              // idle queue: when not anywhere else
 	struct timeval now;          // current time
@@ -1196,7 +1196,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 		if (wait_time) {
 			conn->expire = tv_ms_add(t->now, wait_time);
 			LIST_DELETE(&conn->link);
-			LIST_APPEND(&t->sq, &conn->link);
+			LIST_APPEND(&t->sq[((conn->expire.tv_sec << 3) + (conn->expire.tv_usec >> 17)) & 31], &conn->link);
 			conn->state = CS_THK;
 		}
 		else {
@@ -1364,9 +1364,12 @@ void work(void *arg)
 
 		if (t2 && t2 < t1)
 			t1 = t2;
-		t2 = check_timeouts(thr, &thr->sq);
-		if (t2 && t2 < t1)
-			t1 = t2;
+
+		for (i = 0; i < 32; i++) {
+			t2 = check_timeouts(thr, &thr->sq[i]);
+			if (t2 && t2 < t1)
+				t1 = t2;
+		}
 
 		if (thr->curconn < maxconn)
 			t1 = 1;
@@ -1495,6 +1498,8 @@ int addr_to_ss(char *str, struct sockaddr_storage *ss, struct errmsg *err)
  */
 int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss)
 {
+	int i;
+
 	if (th > MAXTHREADS) {
 		err->len = snprintf(err->msg, err->size, "Invalid thread ID %d\n", th);
 		return -1;
@@ -1502,7 +1507,8 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss)
 
 	memset(&threads[th], 0, sizeof(threads[th]));
 	LIST_INIT(&threads[th].wq);
-	LIST_INIT(&threads[th].sq);
+	for (i = 0; i < 32; i++)
+		LIST_INIT(&threads[th].sq[i]);
 	LIST_INIT(&threads[th].rq);
 	LIST_INIT(&threads[th].iq);
 	/* make sure the conns are evenly distributed amon all threads */
