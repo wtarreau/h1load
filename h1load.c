@@ -1023,7 +1023,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 				}
 				ttfb = tv_us(tv_diff(conn->req_date, t->now));
 				t->tot_ttfb += ttfb;
-				if (arg_pctl)
+				if (arg_pctl && !throttle)
 					t->ttfb_pct[to_uf16(ttfb)]++;
 				t->tot_fbs++;
 
@@ -1152,7 +1152,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 		/* we've reached the end */
 		ttlb = tv_us(tv_diff(conn->req_date, t->now));
 		t->tot_ttlb += ttlb;
-		if (arg_pctl)
+		if (arg_pctl && !throttle)
 			t->ttlb_pct[to_uf16(ttlb)]++;
 		t->tot_lbs++;
 		t->tot_done++;
@@ -1269,7 +1269,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 	if (conn->state == CS_END) {
 		ttlb = tv_us(tv_diff(conn->req_date, t->now));
 		t->tot_ttlb += ttlb;
-		if (arg_pctl)
+		if (arg_pctl && !throttle)
 			t->ttlb_pct[to_uf16(ttlb)]++;
 		t->tot_lbs++;
 	}
