@@ -203,6 +203,7 @@ static char *hdr_block;
 volatile uint32_t running = 0; // # = running threads + THR_* above
 struct thread threads[MAXTHREADS];
 struct timeval start_date, stop_date, now;
+volatile uint32_t throttle = 0;  // pass to mul32hi() if not null.
 
 volatile unsigned long global_req = 0; // global req counter to sync threads.
 
@@ -1293,16 +1294,9 @@ void work(void *arg)
 	while (!(running & THR_STOP_ALL) && (!(running & THR_ENDING) || thr->cur_req)) {
 		maxconn = thr->maxconn;
 
-		if (arg_slow) {
-			int duration = tv_ms_remain(start_date, now);
-
-			if (duration < arg_slow) {
-				maxconn = ((uint64_t)thr->maxconn * duration + arg_slow / 2) / arg_slow;
-				maxconn = maxconn ? maxconn : 1;
-			} else {
-				/* done, don't come back here */
-				arg_slow = 0;
-			}
+		if (throttle) {
+			maxconn = mul32hi(maxconn, throttle);
+			maxconn = maxconn ? maxconn : 1;
 		}
 
 		budget = -1;
@@ -1803,6 +1797,28 @@ char *str_append(char *str, const char *txt1, const char *txt2, const char *txt3
 	return str;
 }
 
+void update_throttle()
+{
+	int duration;
+	uint32_t ratio;
+
+	if (!arg_slow) {
+		throttle = 0;
+		return;
+	}
+
+	duration = tv_ms_remain(start_date, now);
+
+	ratio = 0;
+	if (duration < arg_slow) {
+		ratio = ((uint64_t)0xFFFFFFFFU * duration + arg_slow / 2) / arg_slow;
+		if (ratio < 1)
+			ratio = 1;
+	}
+
+	throttle = ratio;
+}
+
 int main(int argc, char **argv)
 {
 	const char *name = argv[0];
@@ -2000,15 +2016,23 @@ int main(int argc, char **argv)
 	gettimeofday(&now, NULL);
 	show_date = tv_ms_add(now, 1000);
 
+	/* start with the lowest permitted value */
+	if (arg_slow)
+		throttle = 1;
+
 	while (running & THR_COUNT) {
 		uint32_t sleep_time = tv_ms_remain(now, show_date);
 
+		/* update slow-start rates ~10 times per second */
+		if (sleep_time > 100)
+			sleep_time = 100;
 		usleep(sleep_time * 1000);
 		gettimeofday(&now, NULL);
 
 		if ((arg_reqs > 0 && global_req >= arg_reqs) || !tv_isbefore(now, stop_date))
 			__sync_fetch_and_or(&running, THR_ENDING);
 
+		update_throttle();
 		if (!tv_isbefore(now, show_date)) {
 			summary();
 			show_date = tv_ms_add(show_date, 1000);
