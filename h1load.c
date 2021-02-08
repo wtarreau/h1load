@@ -1706,6 +1706,9 @@ void summary()
 	}
 
 	if (arg_long >= 2)
+		printf("%3u ", throttle ? mul32hi(100, throttle) : 100);
+
+	if (arg_long >= 2)
 		printf("%.1f ", (tot_conn - prev_totc) / interval);
 	else
 		printf("%s ", human_number((tot_conn - prev_totc) / interval));
@@ -2043,7 +2046,7 @@ int main(int argc, char **argv)
 	__sync_fetch_and_and(&running, ~THR_SYNSTART);
 
 	if (arg_long >= 2)
-		printf("#_____time conns tot_conn  tot_req      tot_bytes    err cps rps Bps bps ttfb(us) ttlb(us)\n");
+		printf("#_____time conns tot_conn  tot_req      tot_bytes    err thr cps rps Bps bps ttfb(us) ttlb(us)\n");
 	else if (arg_long)
 		printf("#     time conns tot_conn  tot_req      tot_bytes    err  cps  rps  Bps  bps   ttfb   ttlb\n");
 	else
