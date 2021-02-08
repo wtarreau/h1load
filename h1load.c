@@ -1642,6 +1642,7 @@ int main(int argc, char **argv)
 	const char *name = argv[0];
 	struct sockaddr_storage ss;
 	struct errmsg err = { .len = 0, .size = 100, .msg = alloca(100) };
+	struct timeval show_date;
 	int req_len;
 	char *host;
 	char c;
@@ -1824,14 +1825,22 @@ int main(int argc, char **argv)
 	else
 		printf("#     time conns tot_conn  tot_req      tot_bytes    err  cps  rps  bps   ttfb\n");
 
+	gettimeofday(&now, NULL);
+	show_date = tv_ms_add(now, 1000);
+
 	while (running & THR_COUNT) {
-		sleep(1);
+		uint32_t sleep_time = tv_ms_remain(now, show_date);
+
+		usleep(sleep_time * 1000);
 		gettimeofday(&now, NULL);
 
 		if ((arg_reqs > 0 && global_req >= arg_reqs) || !tv_isbefore(now, stop_date))
 			__sync_fetch_and_or(&running, THR_ENDING);
 
-		summary();
+		if (!tv_isbefore(now, show_date)) {
+			summary();
+			show_date = tv_ms_add(show_date, 1000);
+		}
 	}
 
 	/* signal all threads that they must stop */
