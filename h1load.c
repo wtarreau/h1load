@@ -1770,17 +1770,20 @@ void report_percentiles()
 
 	/* create 64 entries from 10 to 100% */
 	nbpts = 0; pct = 0.1;
-	for (; (points[nbpts] = pct) < 0.50000; nbpts++, pct += 0.1);
-	for (; (points[nbpts] = pct) < 0.80000; nbpts++, pct += 0.05);
-	for (; (points[nbpts] = pct) < 0.90000; nbpts++, pct += 0.02);
-	for (; (points[nbpts] = pct) < 0.95000; nbpts++, pct += 0.01);
-	for (; (points[nbpts] = pct) < 0.99000; nbpts++, pct += 0.005);
-	for (; (points[nbpts] = pct) < 0.99500; nbpts++, pct += 0.001);
-	for (; (points[nbpts] = pct) < 0.99900; nbpts++, pct += 0.0005);
-	for (; (points[nbpts] = pct) < 0.99950; nbpts++, pct += 0.0001);
-	for (; (points[nbpts] = pct) < 0.99990; nbpts++, pct += 0.00005);
-	for (; (points[nbpts] = pct) < 0.99995; nbpts++, pct += 0.00001);
-	for (; (points[nbpts] = pct) <= 1.00000; nbpts++, pct += 0.000005);
+	for (; (points[nbpts] = pct) < 0.500000; nbpts++, pct += 0.1);
+	for (; (points[nbpts] = pct) < 0.800000; nbpts++, pct += 0.05);
+	for (; (points[nbpts] = pct) < 0.900000; nbpts++, pct += 0.02);
+	for (; (points[nbpts] = pct) < 0.950000; nbpts++, pct += 0.01);
+	for (; (points[nbpts] = pct) < 0.990000; nbpts++, pct += 0.005);
+	for (; (points[nbpts] = pct) < 0.995000; nbpts++, pct += 0.001);
+	for (; (points[nbpts] = pct) < 0.999000; nbpts++, pct += 0.0005);
+	for (; (points[nbpts] = pct) < 0.999500; nbpts++, pct += 0.0001);
+	for (; (points[nbpts] = pct) < 0.999900; nbpts++, pct += 0.00005);
+	for (; (points[nbpts] = pct) < 0.999950; nbpts++, pct += 0.00001);
+	for (; (points[nbpts] = pct) < 0.999990; nbpts++, pct += 0.000005);
+	for (; (points[nbpts] = pct) < 0.999995; nbpts++, pct += 0.000005);
+	for (; (points[nbpts] = pct) < 0.999999; nbpts++, pct += 0.000004);
+	for (; (points[nbpts] = pct) < 1.000000; nbpts++, pct += 0.000001);
 
 	/* first, let's merge all counters into the first thread's */
 	for (t = 1; t < arg_thrd; t++) {
