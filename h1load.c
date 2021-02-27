@@ -2108,9 +2108,9 @@ int main(int argc, char **argv)
 	while (running & THR_COUNT) {
 		uint32_t sleep_time = tv_ms_remain(now, show_date);
 
-		/* update slow-start rates ~10 times per second */
-		if (sleep_time > 100)
-			sleep_time = 100;
+		/* update slow-start rates ~50 times per second */
+		if (throttle && sleep_time > 20)
+			sleep_time = 20;
 		usleep(sleep_time * 1000);
 		gettimeofday(&now, NULL);
 
