@@ -1425,10 +1425,10 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -c <conn>     concurrent connections (1)\n"
 	    "  -n <reqs>     maximum total requests (-1)\n"
 	    "  -r <reqs>     number of requests per connection (-1)\n"
-	    "  -s <time>     soft start: time in ms to reach 100%% load\n"
+	    "  -s <time>     soft start: time in sec to reach 100%% load\n"
 	    "  -t <threads>  number of threads to create (1)\n"
 	    "  -w <time>     I/O timeout in milliseconds (-1)\n"
-	    "  -T <time>     think time after a response (0)\n"
+	    "  -T <time>     think time in ms after a response (0)\n"
 	    "  -R <rate>     limite to this many request attempts per second (0)\n"
 	    "  -H \"foo:bar\"  adds this header name and value\n"
 	    "  -O extra/payl overhead: #extra bytes per payload size\n"
@@ -1953,7 +1953,7 @@ int main(int argc, char **argv)
 		else if (strcmp(argv[0], "-s") == 0) {
 			if (argc < 2)
 				usage(name, 1);
-			arg_slow = atoi(argv[1]);
+			arg_slow = atof(argv[1]) * 1000.0;
 			argv++; argc--;
 		}
 		else if (strcmp(argv[0], "-t") == 0) {
