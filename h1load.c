@@ -2066,6 +2066,10 @@ int main(int argc, char **argv)
 	if (addr_to_ss(host, &ss, &err) < 0)
 		die(1, err.msg);
 
+	/* start with the lowest permitted value */
+	if (arg_slow)
+		throttle = 1;
+
 	setlinebuf(stdout);
 
 	__sync_fetch_and_or(&running, THR_SYNSTART);
@@ -2100,10 +2104,6 @@ int main(int argc, char **argv)
 
 	gettimeofday(&now, NULL);
 	show_date = tv_ms_add(now, 1000);
-
-	/* start with the lowest permitted value */
-	if (arg_slow)
-		throttle = 1;
 
 	while (running & THR_COUNT) {
 		uint32_t sleep_time = tv_ms_remain(now, show_date);
