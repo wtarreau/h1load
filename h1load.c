@@ -187,7 +187,7 @@ int arg_ovrp = 0;     // overhead correction, per-payload size
 int arg_slow = 0;     // slow start: delay in milliseconds
 int arg_serr = 0;     // stop on first error
 int arg_long = 0;     // long output format; 2=raw values
-int arg_pctl = 0;     // report percentiles
+int arg_pctl = 0;     // report percentiles. >0=measure; <0=end collect
 int arg_rate = 0;     // connection & request rate limit
 char *arg_url;
 char *arg_hdr;
@@ -1023,7 +1023,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 				}
 				ttfb = tv_us(tv_diff(conn->req_date, t->now));
 				t->tot_ttfb += ttfb;
-				if (arg_pctl && !throttle)
+				if (arg_pctl > 0 && !throttle)
 					t->ttfb_pct[to_uf16(ttfb)]++;
 				t->tot_fbs++;
 
@@ -1152,7 +1152,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 		/* we've reached the end */
 		ttlb = tv_us(tv_diff(conn->req_date, t->now));
 		t->tot_ttlb += ttlb;
-		if (arg_pctl && !throttle)
+		if (arg_pctl > 0 && !throttle)
 			t->ttlb_pct[to_uf16(ttlb)]++;
 		t->tot_lbs++;
 		t->tot_done++;
@@ -1269,7 +1269,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 	if (conn->state == CS_END) {
 		ttlb = tv_us(tv_diff(conn->req_date, t->now));
 		t->tot_ttlb += ttlb;
-		if (arg_pctl && !throttle)
+		if (arg_pctl > 0 && !throttle)
 			t->ttlb_pct[to_uf16(ttlb)]++;
 		t->tot_lbs++;
 	}
@@ -2114,8 +2114,23 @@ int main(int argc, char **argv)
 		usleep(sleep_time * 1000);
 		gettimeofday(&now, NULL);
 
-		if ((arg_reqs > 0 && global_req >= arg_reqs) || !tv_isbefore(now, stop_date))
+		if (!arg_pctl && arg_reqs > 0 && global_req >= arg_reqs) {
+			/* immediate stop on #req if no percentile involved */
 			__sync_fetch_and_or(&running, THR_ENDING);
+		}
+		else if (arg_pctl <= 0 && !tv_isbefore(now, stop_date)) {
+			/* immediate stop at end of duration if no percentile
+			 * involved or end of percentile collect was reached.
+			 */
+			__sync_fetch_and_or(&running, THR_ENDING);
+		}
+		else if (arg_pctl > 0 && !tv_isbefore(now, stop_date)) {
+			/* stop collecting percentiles now and really finish in
+			 * ~500 ms.
+			 */
+			arg_pctl = -arg_pctl;
+			stop_date = tv_ms_add(now, 500);
+		}
 
 		update_throttle();
 		if (!tv_isbefore(now, show_date)) {
