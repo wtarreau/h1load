@@ -1161,6 +1161,8 @@ void handle_conn(struct thread *t, struct conn *conn)
 		wait_time = 0;
 		if (arg_thnk)
 			wait_time = arg_thnk * (4096 - 128 + rand()%257) / 4096;
+		else if (arg_pctl < 0) // soft stop to let other threads stop
+			wait_time = 500;
 
 		if (arg_rate) {
 			uint32_t max, wait;
