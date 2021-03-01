@@ -611,6 +611,37 @@ static inline void may_recv(struct conn *conn)
 	conn->flags &= ~CF_BLKR;
 }
 
+/* Tries to read from <conn> into <ptr> for <len> max bytes. Returns the number
+ * of bytes read, 0 if a read shutdown was received, -1 if no data was read
+ * (and connection subscribed), -2 if an error was received. If the buffer is
+ * NULL, then data will be silently drained.
+ */
+static ssize_t recv_raw(struct conn *conn, void *ptr, ssize_t len)
+{
+	ssize_t ret;
+
+	if (!ptr && !MSG_TRUNC) {
+		ptr = buf;
+		if (len > sizeof(buf))
+			len = sizeof(buf);
+	}
+
+	ret = recv(conn->fd, ptr, len, MSG_NOSIGNAL | MSG_DONTWAIT | (ptr ? 0 : MSG_TRUNC));
+	if (ret <= 0) {
+		if (ret == 0) {
+			return 0;
+		}
+		if (errno == EAGAIN) {
+			cant_recv(conn);
+			return -1;
+		}
+		conn->flags |= CF_ERR;
+		return -2;
+	}
+	return ret;
+}
+
+
 struct conn *new_conn()
 {
 	struct conn *conn;
@@ -1051,12 +1082,11 @@ void handle_conn(struct thread *t, struct conn *conn)
 			 * we get all headers at once. Later we may use a temp
 			 * buffer to store partial contents when that happens.
 			 */
-			ret = recv(conn->fd, buf, sizeof(buf), MSG_NOSIGNAL | MSG_DONTWAIT);
+			ret = recv_raw(conn, buf, sizeof(buf));
 			if (ret <= 0) {
-				if (ret < 0 && errno == EAGAIN) {
-					cant_recv(conn);
+				if (ret == -1)
 					goto wait_io;
-				}
+				/* close or error */
 				t->tot_xerr++;
 				t->tot_done++;
 				goto close_conn;
@@ -1158,22 +1188,16 @@ void handle_conn(struct thread *t, struct conn *conn)
 		loops = 3;
 		while (conn->to_recv) {
 			uint64_t try = conn->to_recv;
-			void *ptr = buf;
 
 			if (loops-- == 0) {
 				cant_recv(conn);
 				goto wait_io;
 			}
 
-			if (MSG_TRUNC) {
-				if (try > 1 << 30)
-					try = 1 << 30;
-				ptr = NULL;
-			}
-			else if (try == ~0 || try > sizeof(buf))
-				try = sizeof(buf);
+			if (try > 1 << 30)
+				try = 1 << 30;
 
-			ret = recv(conn->fd, ptr, try, MSG_NOSIGNAL | MSG_DONTWAIT | MSG_TRUNC);
+			ret = recv_raw(conn, NULL, try);
 			if (ret <= 0) {
 				if (ret == 0) {
 					/* received a shutdown, might be OK */
@@ -1185,10 +1209,9 @@ void handle_conn(struct thread *t, struct conn *conn)
 					goto close_conn;
 				}
 
-				if (errno == EAGAIN) {
-					cant_recv(conn);
+				if (ret == -1)
 					goto wait_io;
-				}
+
 				t->tot_xerr++;
 				t->tot_done++;
 				goto close_conn;
@@ -1270,17 +1293,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 		/* continue to monitor the server connection for a possible
 		 * close, and wait for the timeout.
 		 */
-		uint64_t try = 1 << 30;
-		void *ptr = buf;
-
-		try = 1 << 30;
-		if (MSG_TRUNC) {
-			ptr = NULL;
-		}
-		else if (try > sizeof(buf))
-			try = sizeof(buf);
-
-		ret = recv(conn->fd, ptr, try, MSG_NOSIGNAL | MSG_DONTWAIT | MSG_TRUNC);
+		ret = recv_raw(conn, NULL, 1 << 30);
 		if (ret <= 0) {
 			if (ret == 0) {
 				/* received a shutdown */
@@ -1288,8 +1301,10 @@ void handle_conn(struct thread *t, struct conn *conn)
 				goto close_conn;
 			}
 
-			if (errno != EAGAIN)
+			if (ret != -1)
 				goto close_conn;
+
+			/* otherwise EAGAIN */
 		}
 
 		if (running & THR_ENDING)
