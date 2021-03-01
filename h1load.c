@@ -1815,7 +1815,7 @@ void report_percentiles()
 		while (ttlb_idx < 65536 && cur_ttlb + threads[0].ttlb_pct[ttlb_idx] < points[i] * tot_ttlb)
 			cur_ttlb += threads[0].ttlb_pct[ttlb_idx++];
 
-		printf("%-7g %-6g %-7g %9llu %8g %9llu %8g\n",
+		printf("%-7g %-6g %-7.f %9llu %8g %9llu %8g\n",
 		       points[i]*100.0, 100.0*(1.0-points[i]),
 		       points[i] == 1.0 ? 250000 : 1.0/(1.0-points[i]),
 		       (unsigned long long)cur_ttfb, (double)from_uf16(ttfb_idx) / 1000.0,
