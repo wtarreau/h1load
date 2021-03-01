@@ -187,7 +187,7 @@ int arg_ovrp = 0;     // overhead correction, per-payload size
 int arg_slow = 0;     // slow start: delay in milliseconds
 int arg_serr = 0;     // stop on first error
 int arg_long = 0;     // long output format; 2=raw values
-int arg_pctl = 0;     // report percentiles. >0=measure; <0=end collect
+int arg_pctl = 0;     // report percentiles.
 int arg_rate = 0;     // connection & request rate limit
 char *arg_url;
 char *arg_hdr;
@@ -199,13 +199,14 @@ static char *hdr_block;
 #define THR_STOP_ALL 0x80000000  // set on running: must stop now!
 #define THR_ENDING   0x40000000  // set on running: end once done
 #define THR_SYNSTART 0x20000000  // set on running: threads wait for 0
+#define THR_DUR_OVER 0x10000000  // test duration is over
 #define THR_COUNT    0x0FFFFFFF  // mask applied to check thr count
 volatile uint32_t running = 0; // # = running threads + THR_* above
 struct thread threads[MAXTHREADS];
 struct timeval start_date, stop_date, now;
 volatile uint32_t throttle = 0;  // pass to mul32hi() if not null.
 
-volatile unsigned long global_req = 0; // global req counter to sync threads.
+volatile unsigned long global_req = 0; // global (started) req counter to sync threads.
 
 /* current thread */
 __thread struct thread *thr;
@@ -1021,11 +1022,14 @@ void handle_conn(struct thread *t, struct conn *conn)
 					t->tot_done++;
 					goto kill_conn;
 				}
-				ttfb = tv_us(tv_diff(conn->req_date, t->now));
-				t->tot_ttfb += ttfb;
-				if (arg_pctl > 0 && !throttle)
-					t->ttfb_pct[to_uf16(ttfb)]++;
-				t->tot_fbs++;
+
+				if (!(running & THR_DUR_OVER)) {
+					ttfb = tv_us(tv_diff(conn->req_date, t->now));
+					t->tot_ttfb += ttfb;
+					if (arg_pctl > 0 && !throttle)
+						t->ttfb_pct[to_uf16(ttfb)]++;
+					t->tot_fbs++;
+				}
 
 				/* compute how much left is available in the buffer */
 				ret -= parsed;
@@ -1150,18 +1154,20 @@ void handle_conn(struct thread *t, struct conn *conn)
 		}
 
 		/* we've reached the end */
-		ttlb = tv_us(tv_diff(conn->req_date, t->now));
-		t->tot_ttlb += ttlb;
-		if (arg_pctl > 0 && !throttle)
-			t->ttlb_pct[to_uf16(ttlb)]++;
-		t->tot_lbs++;
+		if (!(running & THR_DUR_OVER)) {
+			ttlb = tv_us(tv_diff(conn->req_date, t->now));
+			t->tot_ttlb += ttlb;
+			if (arg_pctl > 0 && !throttle)
+				t->ttlb_pct[to_uf16(ttlb)]++;
+			t->tot_lbs++;
+		}
 		t->tot_done++;
 		t->cur_req--;
 
 		wait_time = 0;
 		if (arg_thnk)
 			wait_time = arg_thnk * (4096 - 128 + rand()%257) / 4096;
-		else if (arg_pctl < 0) // soft stop to let other threads stop
+		else if (running & THR_DUR_OVER) // soft stop to let other threads stop
 			wait_time = 500;
 
 		if (arg_rate) {
@@ -1268,7 +1274,7 @@ void handle_conn(struct thread *t, struct conn *conn)
  kill_conn:
 	setsockopt(conn->fd, SOL_SOCKET, SO_LINGER, &nolinger, sizeof(nolinger));
  close_conn:
-	if (conn->state == CS_END) {
+	if (conn->state == CS_END && !(running & THR_DUR_OVER)) {
 		ttlb = tv_us(tv_diff(conn->req_date, t->now));
 		t->tot_ttlb += ttlb;
 		if (arg_pctl > 0 && !throttle)
@@ -2119,21 +2125,30 @@ int main(int argc, char **argv)
 		usleep(sleep_time * 1000);
 		gettimeofday(&now, NULL);
 
-		if (!arg_pctl && arg_reqs > 0 && global_req >= arg_reqs) {
-			/* immediate stop on #req if no percentile involved */
-			__sync_fetch_and_or(&running, THR_ENDING);
-		}
-		else if (arg_pctl <= 0 && !tv_isbefore(now, stop_date)) {
-			/* immediate stop at end of duration if no percentile
-			 * involved or end of percentile collect was reached.
+		if ((running & THR_DUR_OVER) && !tv_isbefore(now, stop_date)) {
+			/* workers already had time to cleanly stop, let's stop
+			 * them now.
 			 */
 			__sync_fetch_and_or(&running, THR_ENDING);
 		}
-		else if (arg_pctl > 0 && !tv_isbefore(now, stop_date)) {
-			/* stop collecting percentiles now and really finish in
-			 * ~500 ms.
+		else if (arg_reqs > 0 && global_req >= arg_reqs) {
+			/* last requests were just started, we'll now wait for
+			 * all threads to finish them without being disturbed
+			 * by all other ones closing.
 			 */
-			arg_pctl = -arg_pctl;
+			for (th = 0; th < arg_thrd; th++) {
+				if (threads[th].cur_req)
+					break;
+			}
+			if (th == arg_thrd)
+				__sync_fetch_and_or(&running, THR_ENDING);
+		}
+		else if (!tv_isbefore(now, stop_date)) {
+			/* The test duration is over. We first ask to stop
+			 * measurements to avoid parasits caused by stopping
+			 * threads.
+			 */
+			__sync_fetch_and_or(&running, THR_DUR_OVER);
 			stop_date = tv_ms_add(now, 500);
 		}
 
