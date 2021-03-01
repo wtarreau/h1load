@@ -19,10 +19,35 @@ gnuplot <<EOF
   set key outside bottom center horizontal spacing 1.5 reverse Left
   #set terminal png font courbi 9 size 800,400
   set terminal pngcairo size 800,400 background rgb "#f0f0f0"
-  set style fill transparent solid 0.3 noborder
+  set style fill transparent solid 0.20 noborder
   set format y "%.0f"
   set format y2 "%.0f"
   set output "${i%.*}.png"
-  plot "$i" using 1:2 with filledcurves x1 notitle axis x1y2 lt 1, "" using 1:12 with filledcurves x1 notitle axis x1y2 lt 2, "" using 1:9 with filledcurves x1 notitle lt 3, "" using 1:9 with lines title "<- Req/s" lt 3 lw 2, "" using 1:2 with lines title "Nb conn ->" axis x1y2 lt 1 lw 2, "" using 1:12 with lines title "Latency (µs) ->" axis x1y2 lt 2 lw 2
+
+  stats "$i" using 1:2 nooutput
+  conmax=(int((STATS_max_y-0.0001)/(10**(int(log10(STATS_max_y)-1)))/5)*5+5)*(10**(int(log10(STATS_max_y)-1)))
+
+  stats "$i" using 1:9 nooutput
+  rpsmax=(int((STATS_max_y-0.0001)/(10**(int(log10(STATS_max_y)-1)))/5)*5+5)*(10**(int(log10(STATS_max_y)-1)))
+
+  stats "$i" using 1:12 nooutput
+  latmax=(int((STATS_max_y-0.0001)/(10**(int(log10(STATS_max_y)-1)))/5)*5+5)*(10**(int(log10(STATS_max_y)-1)))
+
+  y2max=(latmax>conmax)?latmax:conmax
+  set y2range[0:y2max]
+  set y2tics y2max/10
+
+  set yrange[0:rpsmax]
+  set ytics rpsmax/10
+
+  # reminder on LT: 1=magenta, 2=green, 3=light blue, 4=dark yellow, 5=light yellow, 6=dark blue, 7=red, 8=black
+  plot \
+    "$i" using 1:2  with filledcurves x1 notitle axis x1y2 lt 3, \
+     ""  using 1:12 with filledcurves x1 notitle axis x1y2 lt 1, \
+     ""  using 1:9  with filledcurves x1 notitle lt 2, \
+     ""  using 1:9  with lines title "<- Req/s" lt 2 lw 3, \
+     ""  using 1:2  with lines title "Nb conn ->" axis x1y2 lt 3 lw 3, \
+     ""  using 1:12 with lines title "Latency (µs) ->" axis x1y2 lt 1 lw 3
+
 EOF
 done
