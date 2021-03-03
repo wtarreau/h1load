@@ -622,6 +622,74 @@ struct conn *new_conn()
 	return conn;
 }
 
+/* pre-allocate connections to verify everything works well and to
+ * pre-initialize libc's and kernel's structures. Some tests have
+ * shown huge 25ms times around socket() alone during initial allocs!
+ * This will also help detect insufficient limits.
+ */
+struct conn *pre_heat_connection(struct thread *t)
+{
+	struct conn *conn;
+	struct epoll_event ev;
+	struct sockaddr_storage addr;
+	socklen_t addr_len;
+
+	conn = new_conn();
+	if (!conn)
+		goto fail_conn;
+
+	conn->fd = socket(AF_INET, SOCK_STREAM, 0);
+	if (conn->fd < 0)
+		goto fail_sock;
+
+	if (fcntl(conn->fd, F_SETFL, O_NONBLOCK) == -1)
+		goto fail_setup;
+
+	if (setsockopt(conn->fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) == -1)
+		goto fail_setup;
+
+	if (setsockopt(conn->fd, SOL_TCP, TCP_NODELAY, &one, sizeof(one)) == -1)
+		goto fail_setup;
+
+	if (arg_fast && setsockopt(conn->fd, SOL_TCP, TCP_QUICKACK, &zero, sizeof(zero)) == -1)
+		goto fail_setup;
+
+	memset(&addr, 0, sizeof(addr));
+	addr.ss_family = thr->dst.ss_family;
+	if (bind(conn->fd, (struct sockaddr *)&addr, sizeof(addr)))
+		goto fail_setup;
+
+	addr_len = sizeof(addr);
+	if (getsockname(conn->fd, (struct sockaddr *)&addr, &addr_len) == -1)
+		goto fail_setup;
+
+	ev.data.ptr = 0;
+	ev.events = EPOLLIN;
+
+	/* connect to self */
+	if (connect(conn->fd, (struct sockaddr *)&addr, addr_len) < 0) {
+		/* let's assume it's EINPROGRESS */
+		ev.events |= EPOLLOUT;
+	}
+
+	/* and register to epoll */
+	epoll_ctl(t->epollfd, EPOLL_CTL_ADD, conn->fd, &ev);
+
+	LIST_APPEND(&t->iq, &conn->link);
+	t->curconn++;
+	return conn;
+
+ fail_setup:
+	close(conn->fd);
+ fail_sock:
+	free(conn);
+ fail_conn:
+	if (arg_serr)
+		__sync_fetch_and_or(&running, THR_STOP_ALL);
+	t->tot_serr++;
+	return NULL;
+}
+
 /* Try to establish a connection to t->dst. Return the conn or NULL in case of error */
 struct conn *add_connection(struct thread *t)
 {
@@ -1319,9 +1387,41 @@ void work(void *arg)
 
 	thr = thread;
 
+	/* pre-allocate all connections to avoid huge delays in libc and/or
+	 * kernel on first allocation.
+	 */
+	for (i = 0; i < thr->maxconn; i++) {
+		if (pre_heat_connection(thr) == NULL) {
+			fprintf(stderr, "connection allocation error in thread %d after %d connections.\n", i, thr->curconn);
+			goto quit;
+		}
+	}
+
 	__sync_fetch_and_add(&running, 1);
-	while (running & THR_SYNSTART)
+	while (!(running & THR_SYNSTART)) {
+		if (running & THR_STOP_ALL)
+			goto giveup;
 		usleep(10000);
+	}
+
+	/* here the main thread has replaced all runnings with a single SYNSTART.
+	 * we use this signal to know that all threads have allocated all their
+	 * conns. We must now free ours and report our readiness.
+	 */
+	while (!LIST_ISEMPTY(&thr->iq)) {
+		conn = LIST_NEXT(&thr->iq, typeof(conn), link);
+		LIST_DELETE(&conn->link);
+		close(conn->fd);
+		thr->curconn--;
+		free(conn);
+	}
+
+	__sync_fetch_and_add(&running, 1);
+	while (running & THR_SYNSTART) {
+		if (running & THR_STOP_ALL)
+			goto giveup;
+		usleep(10000);
+	}
 
 	while (!(running & THR_STOP_ALL) && (!(running & THR_ENDING) || thr->cur_req)) {
 		maxconn = thr->maxconn;
@@ -1409,7 +1509,9 @@ void work(void *arg)
 		}
 	}
 
+ giveup:
 	__sync_fetch_and_sub(&running, 1);
+ quit:
 	pthread_exit(0);
 }
 
@@ -2098,7 +2200,6 @@ int main(int argc, char **argv)
 
 	setlinebuf(stdout);
 
-	__sync_fetch_and_or(&running, THR_SYNSTART);
 	for (th = 0; th < arg_thrd; th++) {
 		if (create_thread(th, &err, &ss) < 0) {
 			__sync_fetch_and_or(&running, THR_STOP_ALL);
@@ -2106,7 +2207,19 @@ int main(int argc, char **argv)
 		}
 	}
 
-	/* all running now */
+	/* all started now. Let's wait for them to finish initializing */
+	/* wait for all threads to start (or abort) */
+	while ((running & THR_COUNT) < arg_thrd) {
+		if (running & THR_STOP_ALL)
+			die(1, "fatal error during threads early initialization.\n");
+		usleep(10000);
+	}
+
+	/* at this points, all threads are ready and are waiting for us
+	 * to tell them to close their connections by resetting running
+	 * to zero and watch it increase again.
+	 */
+	__atomic_store_n(&running, THR_SYNSTART, __ATOMIC_RELEASE);
 
 	gettimeofday(&start_date, NULL);
 	if (arg_dura)
@@ -2115,8 +2228,11 @@ int main(int argc, char **argv)
 		stop_date = tv_unset();
 
 	/* wait for all threads to start (or abort) */
-	while ((running & THR_COUNT) < arg_thrd)
+	while ((running & THR_COUNT) < arg_thrd) {
+		if (running & THR_STOP_ALL)
+			die(1, "fatal error during threads late initialization.\n");
 		usleep(10000);
+	}
 
 	/* OK, all threads are ready now */
 	__sync_fetch_and_and(&running, ~THR_SYNSTART);
