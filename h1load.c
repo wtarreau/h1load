@@ -1745,14 +1745,22 @@ void summary()
 	else
 		printf("%s ", human_number(bytes * 8 / interval));
 
-	if (arg_long >= 2)
-		printf("%.1f ", tot_fbs == prev_fbs ? 0.0 : (tot_ttfb - prev_ttfb) / (double)(tot_fbs - prev_fbs));
+	if (arg_long >= 2) {
+		if (tot_fbs - prev_fbs)
+			printf("%.1f ", (tot_ttfb - prev_ttfb) / (double)(tot_fbs - prev_fbs));
+		else
+			printf("- ");
+	}
 	else
 		printf("%s ", tot_fbs == prev_fbs ? "   -  " :
 		       short_delay_str((tot_ttfb - prev_ttfb) / (double)(tot_fbs - prev_fbs)));
 
-	if (arg_long >= 2)
-		printf("%.1f ", tot_lbs == prev_lbs ? 0.0 : (tot_ttlb - prev_ttlb) / (double)(tot_lbs - prev_lbs));
+	if (arg_long >= 2) {
+		if (tot_lbs - prev_lbs)
+			printf("%.1f ", (tot_ttlb - prev_ttlb) / (double)(tot_lbs - prev_lbs));
+		else
+			printf("- ");
+	}
 	else if (arg_long)
 		printf("%s ", tot_lbs == prev_lbs ? "   -  " :
 		       short_delay_str((tot_ttlb - prev_ttlb) / (double)(tot_lbs - prev_lbs)));
