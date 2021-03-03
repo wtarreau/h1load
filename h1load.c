@@ -168,7 +168,7 @@ const int zero = 0;
 const int one = 1;
 
 /* default settings */
-const int pollevents = 100;
+const int pollevents = 40;
 
 /* command line arguments */
 int arg_conn = 1;     // concurrent conns
