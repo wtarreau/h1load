@@ -189,6 +189,7 @@ int arg_serr = 0;     // stop on first error
 int arg_long = 0;     // long output format; 2=raw values
 int arg_pctl = 0;     // report percentiles.
 int arg_rate = 0;     // connection & request rate limit
+int arg_accu = 0;     // more accurate req/time measurements in keep-alive
 char *arg_url;
 char *arg_hdr;
 
@@ -1023,7 +1024,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 					goto kill_conn;
 				}
 
-				if (!(running & THR_DUR_OVER)) {
+				if (!(running & THR_DUR_OVER) && (conn->tot_req > 1 || !arg_accu)) {
 					ttfb = tv_us(tv_diff(conn->req_date, t->now));
 					__atomic_store_n(&t->tot_fbs, t->tot_fbs+1, __ATOMIC_RELEASE);
 					__atomic_store_n(&t->tot_ttfb, t->tot_ttfb+ttfb, __ATOMIC_RELEASE);
@@ -1154,7 +1155,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 		}
 
 		/* we've reached the end */
-		if (!(running & THR_DUR_OVER)) {
+		if (!(running & THR_DUR_OVER) && (conn->tot_req > 1 || !arg_accu)) {
 			ttlb = tv_us(tv_diff(conn->req_date, t->now));
 			__atomic_store_n(&t->tot_lbs, t->tot_lbs+1, __ATOMIC_RELEASE);
 			__atomic_store_n(&t->tot_ttlb, t->tot_ttlb+ttlb, __ATOMIC_RELEASE);
@@ -1274,7 +1275,7 @@ void handle_conn(struct thread *t, struct conn *conn)
  kill_conn:
 	setsockopt(conn->fd, SOL_SOCKET, SO_LINGER, &nolinger, sizeof(nolinger));
  close_conn:
-	if (conn->state == CS_END && !(running & THR_DUR_OVER)) {
+	if (conn->state == CS_END && !(running & THR_DUR_OVER) && (conn->tot_req > 1 || !arg_accu)) {
 		ttlb = tv_us(tv_diff(conn->req_date, t->now));
 		__atomic_store_n(&t->tot_lbs, t->tot_lbs+1, __ATOMIC_RELEASE);
 		__atomic_store_n(&t->tot_ttlb, t->tot_ttlb+ttlb, __ATOMIC_RELEASE);
@@ -1441,6 +1442,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -H \"foo:bar\"  adds this header name and value\n"
 	    "  -O extra/payl overhead: #extra bytes per payload size\n"
 	    "  -l            enable long output format; double for raw values\n"
+	    "  -A            ignore 1st req for resp time measurements\n"
 	    "  -P            report ttfb/ttlb percentiles at the end\n"
 	    "  -e            stop upon first connection error\n"
 	    "  -F            merge send() with connect's ACK\n"
@@ -2024,6 +2026,8 @@ int main(int argc, char **argv)
 			arg_long++;
 		else if (strcmp(argv[0], "-ll") == 0)
 			arg_long = 2;
+		else if (strcmp(argv[0], "-A") == 0)
+			arg_accu++;
 		else if (strcmp(argv[0], "-P") == 0)
 			arg_pctl++;
 		else if (strcmp(argv[0], "-e") == 0)
