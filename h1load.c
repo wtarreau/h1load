@@ -1025,10 +1025,10 @@ void handle_conn(struct thread *t, struct conn *conn)
 
 				if (!(running & THR_DUR_OVER)) {
 					ttfb = tv_us(tv_diff(conn->req_date, t->now));
-					t->tot_ttfb += ttfb;
+					__atomic_store_n(&t->tot_fbs, t->tot_fbs+1, __ATOMIC_RELEASE);
+					__atomic_store_n(&t->tot_ttfb, t->tot_ttfb+ttfb, __ATOMIC_RELEASE);
 					if (arg_pctl > 0 && !throttle)
 						t->ttfb_pct[to_uf16(ttfb)]++;
-					t->tot_fbs++;
 				}
 
 				/* compute how much left is available in the buffer */
@@ -1156,10 +1156,10 @@ void handle_conn(struct thread *t, struct conn *conn)
 		/* we've reached the end */
 		if (!(running & THR_DUR_OVER)) {
 			ttlb = tv_us(tv_diff(conn->req_date, t->now));
-			t->tot_ttlb += ttlb;
+			__atomic_store_n(&t->tot_lbs, t->tot_lbs+1, __ATOMIC_RELEASE);
+			__atomic_store_n(&t->tot_ttlb, t->tot_ttlb+ttlb, __ATOMIC_RELEASE);
 			if (arg_pctl > 0 && !throttle)
 				t->ttlb_pct[to_uf16(ttlb)]++;
-			t->tot_lbs++;
 		}
 		t->tot_done++;
 		t->cur_req--;
@@ -1276,10 +1276,10 @@ void handle_conn(struct thread *t, struct conn *conn)
  close_conn:
 	if (conn->state == CS_END && !(running & THR_DUR_OVER)) {
 		ttlb = tv_us(tv_diff(conn->req_date, t->now));
-		t->tot_ttlb += ttlb;
+		__atomic_store_n(&t->tot_lbs, t->tot_lbs+1, __ATOMIC_RELEASE);
+		__atomic_store_n(&t->tot_ttlb, t->tot_ttlb+ttlb, __ATOMIC_RELEASE);
 		if (arg_pctl > 0 && !throttle)
 			t->ttlb_pct[to_uf16(ttlb)]++;
-		t->tot_lbs++;
 	}
 
 	close(conn->fd);
@@ -1676,15 +1676,18 @@ void summary()
 	cur_conn = tot_conn = tot_req = tot_err = tot_rcvd = 0;
 	tot_ttfb = tot_ttlb = tot_fbs = tot_lbs = 0;
 	for (th = 0; th < arg_thrd; th++) {
-		cur_conn += threads[th].curconn;
-		tot_conn += threads[th].tot_conn;
-		tot_req  += threads[th].tot_done;
-		tot_err  += threads[th].tot_serr + threads[th].tot_cerr + threads[th].tot_xerr + threads[th].tot_perr;
-		tot_rcvd += threads[th].tot_rcvd;
-		tot_ttfb += threads[th].tot_ttfb;
-		tot_ttlb += threads[th].tot_ttlb;
-		tot_fbs  += threads[th].tot_fbs;
-		tot_lbs  += threads[th].tot_lbs;
+		cur_conn += __atomic_load_n(&threads[th].curconn, __ATOMIC_ACQUIRE);
+		tot_conn += __atomic_load_n(&threads[th].tot_conn, __ATOMIC_ACQUIRE);
+		tot_req  += __atomic_load_n(&threads[th].tot_done, __ATOMIC_ACQUIRE);
+		tot_err  += __atomic_load_n(&threads[th].tot_serr, __ATOMIC_ACQUIRE) +
+		            __atomic_load_n(&threads[th].tot_cerr, __ATOMIC_ACQUIRE) +
+		            __atomic_load_n(&threads[th].tot_xerr, __ATOMIC_ACQUIRE) +
+		            __atomic_load_n(&threads[th].tot_perr, __ATOMIC_ACQUIRE);
+		tot_rcvd += __atomic_load_n(&threads[th].tot_rcvd, __ATOMIC_ACQUIRE);
+		tot_ttfb += __atomic_load_n(&threads[th].tot_ttfb, __ATOMIC_ACQUIRE);
+		tot_ttlb += __atomic_load_n(&threads[th].tot_ttlb, __ATOMIC_ACQUIRE);
+		tot_fbs  += __atomic_load_n(&threads[th].tot_fbs, __ATOMIC_ACQUIRE);
+		tot_lbs  += __atomic_load_n(&threads[th].tot_lbs, __ATOMIC_ACQUIRE);
 	}
 
 	/* when called after having stopped, check if we need to dump a final
