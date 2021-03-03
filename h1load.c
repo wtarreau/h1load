@@ -1480,8 +1480,13 @@ void work(void *arg)
 				t1 = t2;
 		}
 
+		/* smooth the ramp up */
 		if (thr->curconn < maxconn)
 			t1 = 1;
+
+		/* don't wait if we didn't create all connections yet */
+		if (budget > 0)
+			t1 = 0;
 
 		nbev = epoll_wait(thr->epollfd, thr->events, pollevents, t1);
 		gettimeofday(&thr->now, NULL);
