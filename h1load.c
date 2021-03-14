@@ -46,6 +46,11 @@
 #include <string.h>
 #include <unistd.h>
 
+#if defined(USE_SSL)
+#include <openssl/err.h>
+#include <openssl/ssl.h>
+#endif
+
 /* some platforms do not provide PAGE_SIZE */
 #ifndef PAGE_SIZE
 #define PAGE_SIZE sysconf(_SC_PAGESIZE)
@@ -120,6 +125,9 @@ struct conn {
 	uint64_t tot_req;            // total requests on this connection
 	uint64_t chnk_size;          // current chunk size being parsed
 	struct timeval req_date;     // moment the request was sent
+#if defined(USE_SSL)
+	SSL *ssl;                    // SSL instance for this connection.
+#endif
 };
 
 /* one thread */
@@ -166,6 +174,9 @@ struct thread {
 	pthread_t pth;               // the pthread descriptor
 	struct sockaddr_storage dst; // destination address
 	struct epoll_event *events;  // event buffer
+#if defined(USE_SSL)
+	SSL_CTX *ssl_ctx;            // ssl context
+#endif
 	__attribute__((aligned(64))) union { } __pad;
 };
 
@@ -681,6 +692,9 @@ struct conn *new_conn()
 		conn->expire = tv_unset();
 		conn->req_date = tv_unset();
 		conn->tot_req = 0;
+#if defined(USE_SSL)
+		conn->ssl = NULL;
+#endif
 	}
 	return conn;
 }
@@ -1671,6 +1685,21 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss,
 
 #if defined(USE_SSL)
 	threads[th].is_ssl = is_ssl;
+	if (is_ssl) {
+		threads[th].ssl_ctx = SSL_CTX_new(SSLv23_client_method());
+		if (!threads[th].ssl_ctx) {
+			err->len = snprintf(err->msg, err->size, "Failed to create SSL context for thread %d\n", th);
+			return -1;
+		}
+
+		SSL_CTX_set_options(threads[th].ssl_ctx, SSL_OP_ALL | SSL_OP_NO_SSLv2 | SSL_OP_NO_COMPRESSION);
+		SSL_CTX_set_mode(threads[th].ssl_ctx,
+		                 SSL_MODE_ENABLE_PARTIAL_WRITE |
+		                 SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER |
+		                 SSL_MODE_RELEASE_BUFFERS);
+		SSL_CTX_set_verify(threads[th].ssl_ctx, SSL_VERIFY_NONE, NULL);
+		SSL_CTX_set_session_cache_mode(threads[th].ssl_ctx, SSL_SESS_CACHE_CLIENT | SSL_SESS_CACHE_NO_INTERNAL_STORE);
+	}
 #endif
 
 	threads[th].start_line = strdup(start_line);
@@ -2099,6 +2128,9 @@ int main(int argc, char **argv)
 	int is_ssl = 0;
 
 	signal(SIGPIPE, SIG_IGN);
+#if defined(USE_SSL)
+	SSL_library_init();
+#endif
 
 	argv++;
 	argc--;
