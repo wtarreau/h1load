@@ -641,6 +641,31 @@ static ssize_t recv_raw(struct conn *conn, void *ptr, ssize_t len)
 	return ret;
 }
 
+/* Tries to send from <ptr> to <conn> for <len> max bytes. Returns the number
+ * of bytes effectively sent, or -1 if no data was sent (and connection
+ * subscribed) or -2 if an error was met.
+ */
+static ssize_t send_raw(struct conn *conn, void *ptr, ssize_t len)
+{
+	ssize_t ret;
+
+	if (conn->flags & (CF_BLKW | CF_ERR)) {
+		if (conn->flags & CF_ERR)
+			return -2;
+		return -1;
+	}
+
+	ret = send(conn->fd, ptr, len, MSG_NOSIGNAL | MSG_DONTWAIT);
+	if (ret < 0) {
+		if (errno == EAGAIN) {
+			cant_send(conn);
+			return -1;
+		}
+		conn->flags |= CF_ERR;
+		return -2;
+	}
+	return ret;
+}
 
 struct conn *new_conn()
 {
@@ -1011,16 +1036,13 @@ void handle_conn(struct thread *t, struct conn *conn)
 		else
 			do_close = 0;
 
-		ret = send(conn->fd,
-		           do_close ? t->cl_req : t->ka_req,
-		           do_close ? t->cl_req_len : t->ka_req_len,
-		           MSG_NOSIGNAL | MSG_DONTWAIT);
+		ret = send_raw(conn,
+		               do_close ? t->cl_req : t->ka_req,
+		               do_close ? t->cl_req_len : t->ka_req_len);
 
 		if (ret < 0) {
-			if (errno == EAGAIN) {
-				cant_send(conn);
+			if (ret == -1)
 				goto wait_io;
-			}
 			/* only the first request of a connection sees an error
 			 * on the brutal close of a keep-alive connection, for
 			 * the other one a silent retry is required.
