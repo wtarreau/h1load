@@ -113,6 +113,8 @@ struct conn {
 	uint32_t flags;              // CF_*
 	enum cstate state;           // CS_*
 	int fd;                      // associated FD
+	int to_send;                 // number of bytes left to send from <send_ptr>
+	void *send_ptr;              // where to send from
 	uint64_t to_recv;            // bytes left to receive; 0=headers; ~0=unlimited
 	uint64_t tot_req;            // total requests on this connection
 	uint64_t chnk_size;          // current chunk size being parsed
@@ -951,7 +953,6 @@ void handle_conn(struct thread *t, struct conn *conn)
 	int expired = !!(conn->flags & CF_EXP);
 	int loops;
 	int ret, parsed;
-	int do_close;
 	uint32_t wait_time;
 	uint64_t ttfb, ttlb;     // time-to-first-byte, time-to-last-byte (in us)
 
@@ -995,6 +996,26 @@ void handle_conn(struct thread *t, struct conn *conn)
 		t->cur_req++;
 		if (arg_rate)
 			update_freq_ctr(&t->req_rate, 1, t->now);
+
+		/* let's prepare a new request in <send_ptr, to_send> */
+
+		conn->flags &= ~(CF_HEAD | CF_V11 | CF_EXP);
+		conn->to_recv = 0; // wait for headers
+
+		/* check for HEAD */
+		if (*(uint32_t *)t->start_line == ntohl(0x48454144))
+			conn->flags |= CF_HEAD;
+
+		if ((arg_rcon > 0 && conn->tot_req == arg_rcon) ||
+		    (arg_reqs > 0 && global_req >= arg_reqs)) {
+			conn->to_send = t->cl_req_len;
+			conn->send_ptr = t->cl_req;
+		}
+		else {
+			conn->to_send = t->ka_req_len;
+			conn->send_ptr = t->ka_req;
+		}
+
 		conn->state = CS_SND;
 	}
 
@@ -1021,25 +1042,9 @@ void handle_conn(struct thread *t, struct conn *conn)
 			goto wait_io;
 		}
 
-		conn->flags &= ~(CF_HEAD | CF_V11 | CF_EXP);
-		conn->to_recv = 0; // wait for headers
-
-		/* check for HEAD */
-		if (*(uint32_t *)t->start_line == ntohl(0x48454144))
-			conn->flags |= CF_HEAD;
-
 		/* finally ready, let's try (again?) */
 
-		if ((arg_rcon > 0 && conn->tot_req == arg_rcon) ||
-		    (arg_reqs > 0 && global_req >= arg_reqs))
-			do_close = 1;
-		else
-			do_close = 0;
-
-		ret = send_raw(conn,
-		               do_close ? t->cl_req : t->ka_req,
-		               do_close ? t->cl_req_len : t->ka_req_len);
-
+		ret = send_raw(conn, conn->send_ptr, conn->to_send);
 		if (ret < 0) {
 			if (ret == -1)
 				goto wait_io;
@@ -1055,7 +1060,12 @@ void handle_conn(struct thread *t, struct conn *conn)
 		}
 
 		t->tot_sent += ret;
+		conn->to_send -= ret;
+		conn->send_ptr += ret;
 		conn->req_date = t->now;
+
+		if (conn->to_send)
+			goto wait_io;
 
 		/* nothing more to send, wait for response */
 		stop_send(conn);
