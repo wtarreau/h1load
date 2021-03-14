@@ -910,7 +910,6 @@ void handle_conn(struct thread *t, struct conn *conn)
 				t->tot_cto++;
 				goto kill_conn;
 			}
-			cant_send(conn);
 			goto done;
 		}
 
@@ -961,7 +960,6 @@ void handle_conn(struct thread *t, struct conn *conn)
 				t->tot_done++;
 				goto kill_conn;
 			}
-			cant_send(conn);
 			goto wait_io;
 		}
 
