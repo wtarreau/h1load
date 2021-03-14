@@ -38,6 +38,7 @@
 #include <fcntl.h>
 #include <netdb.h>
 #include <pthread.h>
+#include <signal.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -2091,6 +2092,8 @@ int main(int argc, char **argv)
 	char *host;
 	char c;
 	int th;
+
+	signal(SIGPIPE, SIG_IGN);
 
 	argv++;
 	argc--;
