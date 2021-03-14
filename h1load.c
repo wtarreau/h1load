@@ -154,6 +154,10 @@ struct thread {
 	char *start_line;            // copy of the request's start line to be sent
 	char *hdr_block;             // copy of the request's header block to be sent
 	int hdr_len;                 // request's header block's length
+	int ka_req_len;              // keep-alive request length
+	char *ka_req;                // fully assembled keep-alive request
+	char *cl_req;                // fully assembled close request
+	int cl_req_len;              // close request length
 	int tid;                     // thread number
 	struct timeval start_date;   // thread's start date
 	pthread_t pth;               // the pthread descriptor
@@ -888,12 +892,10 @@ int parse_resp(struct conn *conn, char *buf, int len)
 void handle_conn(struct thread *t, struct conn *conn)
 {
 	const struct linger nolinger = { .l_onoff = 1, .l_linger = 0 };
-	struct iovec iovec[4];
-	struct msghdr msghdr = { };
-	int nbvec;
 	int expired = !!(conn->flags & CF_EXP);
 	int loops;
 	int ret, parsed;
+	int do_close;
 	uint32_t wait_time;
 	uint64_t ttfb, ttlb;     // time-to-first-byte, time-to-last-byte (in us)
 
@@ -971,35 +973,18 @@ void handle_conn(struct thread *t, struct conn *conn)
 			conn->flags |= CF_HEAD;
 
 		/* finally ready, let's try (again?) */
-		nbvec = 0;
-
-		/* start line */
-		iovec[nbvec].iov_base = t->start_line;
-		iovec[nbvec].iov_len  = t->start_len;
-		nbvec++;
-
-		/* header block */
-		if (t->hdr_len) {
-			iovec[nbvec].iov_base = t->hdr_block;
-			iovec[nbvec].iov_len  = t->hdr_len;
-			nbvec++;
-		}
 
 		if ((arg_rcon > 0 && conn->tot_req == arg_rcon) ||
-		    (arg_reqs > 0 && global_req >= arg_reqs)) {
-			iovec[nbvec].iov_base = "Connection: close\r\n";
-			iovec[nbvec].iov_len = 19;
-			nbvec++;
-		}
+		    (arg_reqs > 0 && global_req >= arg_reqs))
+			do_close = 1;
+		else
+			do_close = 0;
 
-		iovec[nbvec].iov_base = "\r\n";
-		iovec[nbvec].iov_len = 2;
-		nbvec++;
+		ret = send(conn->fd,
+		           do_close ? t->cl_req : t->ka_req,
+		           do_close ? t->cl_req_len : t->ka_req_len,
+		           MSG_NOSIGNAL | MSG_DONTWAIT);
 
-		msghdr.msg_iov = iovec;
-		msghdr.msg_iovlen = nbvec;
-
-		ret = sendmsg(conn->fd, &msghdr, MSG_NOSIGNAL | MSG_DONTWAIT);
 		if (ret < 0) {
 			if (errno == EAGAIN) {
 				cant_send(conn);
@@ -1651,6 +1636,22 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss)
 		}
 		threads[th].hdr_len = strlen(threads[th].hdr_block);
 	}
+
+	threads[th].ka_req = calloc(threads[th].start_len + threads[th].hdr_len + 2 + 1, 1);
+	threads[th].cl_req = calloc(threads[th].start_len + threads[th].hdr_len + 19 + 2 + 1, 1);
+	if (!threads[th].ka_req || !threads[th].cl_req) {
+		err->len = snprintf(err->msg, err->size, "Failed to allocate full-request block for thread %d\n", th);
+		return -1;
+	}
+	memcpy(threads[th].ka_req, start_line, threads[th].start_len);
+	if (threads[th].hdr_len)
+		memcpy(threads[th].ka_req + threads[th].start_len, hdr_block, threads[th].hdr_len);
+
+	memcpy(threads[th].cl_req, threads[th].ka_req, threads[th].start_len + threads[th].hdr_len);
+	memcpy(threads[th].ka_req + threads[th].start_len + threads[th].hdr_len, "\r\n\0", 3);
+	memcpy(threads[th].cl_req + threads[th].start_len + threads[th].hdr_len, "Connection: close\r\n\r\n\0", 22);
+	threads[th].ka_req_len = threads[th].start_len + threads[th].hdr_len + 2;
+	threads[th].cl_req_len = threads[th].start_len + threads[th].hdr_len + 19 + 2;
 
 	if (arg_pctl) {
 		threads[th].ttfb_pct = calloc(1 << 16, sizeof(*threads[th].ttfb_pct));
