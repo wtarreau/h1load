@@ -681,6 +681,72 @@ static ssize_t send_raw(struct conn *conn, void *ptr, ssize_t len)
 	return ret;
 }
 
+#if defined(USE_SSL)
+/* Tries to send from <ptr> to <conn> for <len> max bytes using SSL. Returns
+ * the number of bytes effectively sent, or -1 if no data was sent (and
+ * connection subscribed) or -2 if an error was met.
+ */
+static ssize_t send_ssl(struct conn *conn, void *ptr, ssize_t len)
+{
+	ssize_t ret;
+
+	ret = SSL_write(conn->ssl, ptr, len);
+	if (ret < 0) {
+		int err = SSL_get_error(conn->ssl, ret);
+
+		if (err == SSL_ERROR_WANT_WRITE) {
+			cant_send(conn);
+			ret = -1;
+		}
+		else if (err == SSL_ERROR_WANT_READ) {
+			cant_recv(conn);
+			ret = -1;
+		}
+		else {
+			conn->flags |= CF_ERR;
+			ret = -2;
+		}
+	}
+	return ret;
+}
+
+/* Tries to read from <conn> into <ptr> for <len> max bytes over SSL. Returns
+ * the number of bytes read, 0 if a read shutdown was received, -1 if no data
+ * was read (and connection subscribed), -2 if an error was received. If the
+ * buffer is NULL, then data will be silently drained.
+ */
+static ssize_t recv_ssl(struct conn *conn, void *ptr, ssize_t len)
+{
+	ssize_t ret;
+
+	if (!ptr) {
+		/* drain */
+		ptr = buf;
+		if (len > sizeof(buf))
+			len = sizeof(buf);
+	}
+
+	ret = SSL_read(conn->ssl, ptr, len);
+	if (ret < 0) {
+		int err = SSL_get_error(conn->ssl, ret);
+
+		if (err == SSL_ERROR_WANT_WRITE) {
+			cant_send(conn);
+			ret = -1;
+		}
+		else if (err == SSL_ERROR_WANT_READ) {
+			cant_recv(conn);
+			ret = -1;
+		}
+		else {
+			conn->flags |= CF_ERR;
+			ret = -2;
+		}
+	}
+	return ret;
+}
+#endif
+
 struct conn *new_conn()
 {
 	struct conn *conn;
@@ -803,6 +869,16 @@ struct conn *add_connection(struct thread *t)
 		conn->state = CS_REQ;
 		LIST_APPEND(&t->iq, &conn->link);
 	}
+
+#if defined(USE_SSL)
+	if (t->is_ssl) {
+		conn->ssl = SSL_new(t->ssl_ctx);
+		if (!conn->ssl)
+			goto fail_setup;
+		SSL_set_fd(conn->ssl, conn->fd);
+		SSL_connect(conn->ssl);
+	}
+#endif
 
 	if (arg_rate)
 		update_freq_ctr(&t->conn_rate, 1, t->now);
@@ -1059,7 +1135,13 @@ void handle_conn(struct thread *t, struct conn *conn)
 
 		/* finally ready, let's try (again?) */
 
-		ret = send_raw(conn, conn->send_ptr, conn->to_send);
+#if defined(USE_SSL)
+		if (conn->ssl)
+			ret = send_ssl(conn, conn->send_ptr, conn->to_send);
+		else
+#endif
+			ret = send_raw(conn, conn->send_ptr, conn->to_send);
+
 		if (ret < 0) {
 			if (ret == -1)
 				goto wait_io;
@@ -1129,7 +1211,12 @@ void handle_conn(struct thread *t, struct conn *conn)
 			 * we get all headers at once. Later we may use a temp
 			 * buffer to store partial contents when that happens.
 			 */
-			ret = recv_raw(conn, buf, sizeof(buf));
+#if defined(USE_SSL)
+			if (conn->ssl)
+				ret = recv_ssl(conn, buf, sizeof(buf));
+			else
+#endif
+				ret = recv_raw(conn, buf, sizeof(buf));
 			if (ret <= 0) {
 				if (ret == -1)
 					goto wait_io;
@@ -1244,7 +1331,13 @@ void handle_conn(struct thread *t, struct conn *conn)
 			if (try > 1 << 30)
 				try = 1 << 30;
 
-			ret = recv_raw(conn, NULL, try);
+#if defined(USE_SSL)
+			if (conn->ssl)
+				ret = recv_ssl(conn, NULL, try);
+			else
+#endif
+				ret = recv_raw(conn, NULL, try);
+
 			if (ret <= 0) {
 				if (ret == 0) {
 					/* received a shutdown, might be OK */
@@ -1340,7 +1433,13 @@ void handle_conn(struct thread *t, struct conn *conn)
 		/* continue to monitor the server connection for a possible
 		 * close, and wait for the timeout.
 		 */
-		ret = recv_raw(conn, NULL, 1 << 30);
+#if defined(USE_SSL)
+		if (conn->ssl)
+			ret = recv_ssl(conn, NULL, 1 << 30);
+		else
+#endif
+			ret = recv_raw(conn, NULL, 1 << 30);
+
 		if (ret <= 0) {
 			if (ret == 0) {
 				/* received a shutdown */
@@ -1401,6 +1500,10 @@ void handle_conn(struct thread *t, struct conn *conn)
 		t->cur_req--;
 	t->curconn--;
 	LIST_DELETE(&conn->link);
+#if defined(USE_SSL)
+	if (conn->ssl)
+		SSL_free(conn->ssl);
+#endif
 	free(conn);
 }
 
