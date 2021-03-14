@@ -132,9 +132,9 @@ struct thread {
 	struct freq_ctr req_rate;    // thread's measured request rate
 	struct freq_ctr conn_rate;   // thread's measured connection rate
 	uint32_t cur_req;            // number of active requests
-	/* 32-bit hole here */
 	uint32_t curconn;            // number of active connections
 	uint32_t maxconn;            // max number of active connections
+	uint32_t is_ssl;             // non-zero if SSL is used
 	uint64_t tot_conn;           // total conns attempted on this thread
 	uint64_t tot_req;            // total requests started on this thread
 	uint64_t tot_done;           // total requests finished (successes+failures)
@@ -1644,7 +1644,7 @@ int addr_to_ss(char *str, struct sockaddr_storage *ss, struct errmsg *err)
 /* creates and initializes thread <th>, returns <0 on failure. The initial
  * request is supposed to still be in <buf>.
  */
-int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss)
+int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss, int is_ssl)
 {
 	int i;
 
@@ -1668,6 +1668,10 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss)
 		err->len = snprintf(err->msg, err->size, "Failed to allocate %d poll_events for thread %d\n", pollevents, th);
 		return -1;
 	}
+
+#if defined(USE_SSL)
+	threads[th].is_ssl = is_ssl;
+#endif
 
 	threads[th].start_line = strdup(start_line);
 	if (!threads[th].start_line) {
@@ -2092,6 +2096,7 @@ int main(int argc, char **argv)
 	char *host;
 	char c;
 	int th;
+	int is_ssl = 0;
 
 	signal(SIGPIPE, SIG_IGN);
 
@@ -2208,8 +2213,16 @@ int main(int argc, char **argv)
 	if (!argc)
 		usage(name, 1);
 
-	if (strncmp(*argv, "http://", 7) == 0)
+	if (strncmp(*argv, "https://", 8) == 0) {
+#if defined(USE_SSL)
+		is_ssl = 1;
+#else
+		die(1, "SSL support was disabled at build time\n");
+#endif
+		*argv += 8;
+	} else if (strncmp(*argv, "http://", 7) == 0) {
 		*argv += 7;
+	}
 
 	arg_url = strchr(*argv, '/');
 	c = 0;
@@ -2255,7 +2268,7 @@ int main(int argc, char **argv)
 	setlinebuf(stdout);
 
 	for (th = 0; th < arg_thrd; th++) {
-		if (create_thread(th, &err, &ss) < 0) {
+		if (create_thread(th, &err, &ss, is_ssl) < 0) {
 			__sync_fetch_and_or(&running, THR_STOP_ALL);
 			die(1, err.msg);
 		}
