@@ -55,7 +55,7 @@ shared: $(SHARED)
 tools: $(BINS)
 
 h1load: h1load.o
-	$(LD) $(LDFLAGS) -o $@ $^
+	$(LD) -o $@ $^ $(LDFLAGS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -o $@ -c $<
