@@ -2220,6 +2220,16 @@ void update_throttle()
 	throttle = ratio;
 }
 
+/* this is in order to cleanly stop on Ctrl-C */
+void sigint_handler(int sig)
+{
+	/* claim we're done */
+	__sync_fetch_and_or(&running, THR_DUR_OVER);
+	stop_date = tv_ms_add(now, 500);
+	/* make sure a second Ctrl-C really stops */
+	signal(SIGINT, SIG_DFL);
+}
+
 int main(int argc, char **argv)
 {
 	const char *name = argv[0];
@@ -2410,6 +2420,8 @@ int main(int argc, char **argv)
 			die(1, err.msg);
 		}
 	}
+
+	signal(SIGINT, sigint_handler);
 
 	/* all started now. Let's wait for them to finish initializing */
 	/* wait for all threads to start (or abort) */
