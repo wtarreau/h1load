@@ -187,6 +187,7 @@ const int one = 1;
 
 /* default settings */
 const int pollevents = 40;
+const struct linger nolinger = { .l_onoff = 1, .l_linger = 0 };
 
 /* command line arguments */
 int arg_conn = 1;     // concurrent conns
@@ -815,6 +816,8 @@ struct conn *pre_heat_connection(struct thread *t)
 		ev.events |= EPOLLOUT;
 	}
 
+	setsockopt(conn->fd, SOL_SOCKET, SO_LINGER, &nolinger, sizeof(nolinger));
+
 	/* and register to epoll */
 	epoll_ctl(t->epollfd, EPOLL_CTL_ADD, conn->fd, &ev);
 
@@ -1040,7 +1043,6 @@ int parse_resp(struct conn *conn, char *buf, int len)
 /* handles I/O and timeouts for connection <conn> on thread <t> */
 void handle_conn(struct thread *t, struct conn *conn)
 {
-	const struct linger nolinger = { .l_onoff = 1, .l_linger = 0 };
 	int expired = !!(conn->flags & CF_EXP);
 	int loops;
 	int ret, parsed;
