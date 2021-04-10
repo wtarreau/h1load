@@ -173,6 +173,7 @@ struct thread {
 	struct timeval start_date;   // thread's start date
 	pthread_t pth;               // the pthread descriptor
 	struct sockaddr_storage dst; // destination address
+	struct sockaddr_storage pre_heat; // destination address for pre-heat
 	struct epoll_event *events;  // event buffer
 #if defined(USE_SSL)
 	SSL_CTX *ssl_ctx;            // ssl context
@@ -798,10 +799,18 @@ struct conn *pre_heat_connection(struct thread *t)
 	if (arg_fast && setsockopt(conn->fd, SOL_TCP, TCP_QUICKACK, &zero, sizeof(zero)) == -1)
 		goto fail_setup;
 
-	memset(&addr, 0, sizeof(addr));
-	addr.ss_family = thr->dst.ss_family;
-	if (bind(conn->fd, (struct sockaddr *)&addr, sizeof(addr)))
-		goto fail_setup;
+	/* only the first connection assigns a listening port, better stay
+	 * short on this as bind() takes a huge amount of time finding a port.
+	 */
+	if (!t->curconn) {
+		memset(&addr, 0, sizeof(addr));
+		addr.ss_family = thr->dst.ss_family;
+		if (bind(conn->fd, (struct sockaddr *)&addr, sizeof(addr)))
+			goto fail_setup;
+		t->pre_heat = addr;
+	}
+	else
+		addr = t->pre_heat;
 
 	addr_len = sizeof(addr);
 	if (getsockname(conn->fd, (struct sockaddr *)&addr, &addr_len) == -1)
