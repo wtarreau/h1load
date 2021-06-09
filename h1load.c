@@ -160,6 +160,7 @@ struct thread {
 	uint64_t tot_ttlb;           // total time-to-last-byte (us)
 	uint64_t *ttfb_pct;          // counts per ttfb value for percentile
 	uint64_t *ttlb_pct;          // counts per ttlb value for percentile
+	uint64_t tot_sc[5];          // total status codes on this thread: 1xx,2xx,3xx,4xx,5xx
 	int epollfd;                 // poller's FD
 	int start_len;               // request's start line's length
 	char *start_line;            // copy of the request's start line to be sent
@@ -210,6 +211,7 @@ int arg_long = 0;     // long output format; 2=raw values
 int arg_pctl = 0;     // report percentiles.
 int arg_rate = 0;     // connection & request rate limit
 int arg_accu = 0;     // more accurate req/time measurements in keep-alive
+int arg_hscd = 0;     // HTTP status code distribution
 char *arg_url;
 char *arg_hdr;
 
@@ -910,9 +912,10 @@ struct conn *add_connection(struct thread *t)
 }
 
 /* parse HTTP response in <buf> of len <len>. Returns <0 on error (incl too
- * short), or the number of bytes of headers block on success.
+ * short), or the number of bytes of headers block on success. If <rstatus> is
+ * not null, returns the parsed status there on success.
  */
-int parse_resp(struct conn *conn, char *buf, int len)
+int parse_resp(struct conn *conn, char *buf, int len, int *rstatus)
 {
 	int ver;
 	int status;
@@ -1043,6 +1046,9 @@ int parse_resp(struct conn *conn, char *buf, int len)
 		conn->to_recv = 0;
 	else
 		conn->to_recv = cl; // content-length
+
+	if (rstatus)
+		*rstatus = status;
 	return p - buf;
 
  too_short:
@@ -1240,15 +1246,22 @@ void handle_conn(struct thread *t, struct conn *conn)
 			t->tot_rcvd += ret;
 			parsed = 0;
 			if (!(conn->flags & CF_CHNK)) {
+				int status;
+
 				/* the only case of !to_recv && !CHNK is when
 				 * we are waiting for headers
 				 */
-				parsed = parse_resp(conn, buf, ret);
+				parsed = parse_resp(conn, buf, ret, &status);
 				if (parsed < 0) {
 					t->tot_perr++;
 					t->tot_done++;
 					goto kill_conn;
 				}
+
+				/* status is between 100 and 599 inclusive, let's
+				 * reduce it to 0..4, that's OK for 0..1098.
+				 */
+				t->tot_sc[status * 41 / 4096 - 1]++;
 
 				if (!(running & THR_DUR_OVER) && (conn->tot_req > 1 || !arg_accu)) {
 					ttfb = tv_us(tv_diff(conn->req_date, t->now));
@@ -1713,6 +1726,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -e            stop upon first connection error\n"
 	    "  -F            merge send() with connect's ACK\n"
 	    "  -I            use HEAD instead of GET\n"
+	    "  -S            show HTTP status codes distribution\n"
 	    "  -h            display this help\n"
 	    "  -v            increase verbosity\n"
 	    "\n"
@@ -1970,14 +1984,16 @@ void summary()
 {
 	int th;
 	uint64_t cur_conn, tot_conn, tot_req, tot_err, tot_rcvd, bytes;
-	uint64_t tot_ttfb, tot_ttlb, tot_fbs, tot_lbs;
+	uint64_t tot_ttfb, tot_ttlb, tot_fbs, tot_lbs, tot_sc[5];
 	static uint64_t prev_totc, prev_totr, prev_totb;
-	static uint64_t prev_ttfb, prev_ttlb, prev_fbs, prev_lbs;
+	static uint64_t prev_ttfb, prev_ttlb, prev_fbs, prev_lbs, prev_sc[5];
 	static struct timeval prev_date = TV_UNSET;
 	double interval;
 
 	cur_conn = tot_conn = tot_req = tot_err = tot_rcvd = 0;
 	tot_ttfb = tot_ttlb = tot_fbs = tot_lbs = 0;
+	tot_sc[0] = tot_sc[1] = tot_sc[2] = tot_sc[3] = tot_sc[4] = 0;
+
 	for (th = 0; th < arg_thrd; th++) {
 		cur_conn += __atomic_load_n(&threads[th].curconn, __ATOMIC_ACQUIRE);
 		tot_conn += __atomic_load_n(&threads[th].tot_conn, __ATOMIC_ACQUIRE);
@@ -1991,6 +2007,11 @@ void summary()
 		tot_ttlb += __atomic_load_n(&threads[th].tot_ttlb, __ATOMIC_ACQUIRE);
 		tot_fbs  += __atomic_load_n(&threads[th].tot_fbs, __ATOMIC_ACQUIRE);
 		tot_lbs  += __atomic_load_n(&threads[th].tot_lbs, __ATOMIC_ACQUIRE);
+		tot_sc[0]+= __atomic_load_n(&threads[th].tot_sc[0], __ATOMIC_ACQUIRE);
+		tot_sc[1]+= __atomic_load_n(&threads[th].tot_sc[1], __ATOMIC_ACQUIRE);
+		tot_sc[2]+= __atomic_load_n(&threads[th].tot_sc[2], __ATOMIC_ACQUIRE);
+		tot_sc[3]+= __atomic_load_n(&threads[th].tot_sc[3], __ATOMIC_ACQUIRE);
+		tot_sc[4]+= __atomic_load_n(&threads[th].tot_sc[4], __ATOMIC_ACQUIRE);
 	}
 
 	/* when called after having stopped, check if we need to dump a final
@@ -2067,6 +2088,16 @@ void summary()
 	else if (arg_long)
 		printf("%s ", tot_lbs == prev_lbs ? "   -  " :
 		       short_delay_str((tot_ttlb - prev_ttlb) / (double)(tot_lbs - prev_lbs)));
+
+	/* status codes distribution */
+	if (arg_hscd)
+		printf("%3llu %3llu %3llu %3llu %3llu ",
+		       (unsigned long long)(tot_sc[0] - prev_sc[0]),
+		       (unsigned long long)(tot_sc[1] - prev_sc[1]),
+		       (unsigned long long)(tot_sc[2] - prev_sc[2]),
+		       (unsigned long long)(tot_sc[3] - prev_sc[3]),
+		       (unsigned long long)(tot_sc[4] - prev_sc[4]));
+
 	putchar('\n');
 
 	prev_totc = tot_conn;
@@ -2076,6 +2107,11 @@ void summary()
 	prev_lbs  = tot_lbs;
 	prev_ttfb = tot_ttfb;
 	prev_ttlb = tot_ttlb;
+	prev_sc[0]= tot_sc[0];
+	prev_sc[1]= tot_sc[1];
+	prev_sc[2]= tot_sc[2];
+	prev_sc[3]= tot_sc[3];
+	prev_sc[4]= tot_sc[4];
 	prev_date = now;
 }
 
@@ -2355,6 +2391,8 @@ int main(int argc, char **argv)
 			arg_head = 1;
 		else if (strcmp(argv[0], "-v") == 0)
 			arg_verb++;
+		else if (strcmp(argv[0], "-S") == 0)
+			arg_hscd++;
 		else if (strcmp(argv[0], "-h") == 0)
 			usage(name, 0);
 		else
@@ -2463,12 +2501,16 @@ int main(int argc, char **argv)
 	__sync_fetch_and_and(&running, ~THR_SYNSTART);
 
 	if (arg_long >= 2)
-		printf("#_____time conns tot_conn  tot_req      tot_bytes    err thr cps rps Bps bps ttfb(us) ttlb(us)\n");
+		printf("#_____time conns tot_conn  tot_req      tot_bytes    err thr cps rps Bps bps ttfb(us) ttlb(us)");
 	else if (arg_long)
-		printf("#     time conns tot_conn  tot_req      tot_bytes    err  cps  rps  Bps  bps   ttfb   ttlb\n");
+		printf("#     time conns tot_conn  tot_req      tot_bytes    err  cps  rps  Bps  bps   ttfb   ttlb");
 	else
-		printf("#     time conns tot_conn  tot_req      tot_bytes    err  cps  rps  bps   ttfb\n");
+		printf("#     time conns tot_conn  tot_req      tot_bytes    err  cps  rps  bps   ttfb");
 
+	if (arg_hscd)
+		printf(" 1xx 2xx 3xx 4xx 5xx");
+
+	putchar('\n');
 	gettimeofday(&now, NULL);
 	show_date = tv_ms_add(now, 1000);
 
