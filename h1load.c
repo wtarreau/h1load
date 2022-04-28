@@ -60,6 +60,10 @@
 #define MAXTHREADS 64
 #endif
 
+#ifndef EPOLLRDHUP
+#define EPOLLRDHUP 0
+#endif
+
 /* some useful types */
 struct list {
 	struct list *n, *p;
@@ -100,6 +104,8 @@ struct freq_ctr {
 #define CF_V11  0x00000040    // HTTP/1.1 used for the response
 #define CF_EXP  0x00000080    // task expired in a wait queue
 #define CF_CHNK 0x00000100    // chunked encoding
+#define CF_HUPR 0x00000200    // HUP/RDHUP reported by poller
+#define CF_HUPC 0x00000400    // HUP/RDHUP confirmed
 
 /* connection states */
 enum cstate {
@@ -568,7 +574,7 @@ void update_poll(int ep, int fd, uint32_t flags, void *ptr)
 	int op;
 
 	ev.data.ptr = ptr;
-	ev.events = ((flags & CF_BLKW) ? EPOLLOUT : 0) | ((flags & CF_BLKR) ? EPOLLIN : 0);
+	ev.events = ((flags & CF_BLKW) ? EPOLLOUT : 0) | ((flags & CF_BLKR) ? (EPOLLRDHUP|EPOLLHUP|EPOLLIN) : 0);
 	if (!(flags & (CF_POLR | CF_POLW)))
 		op = EPOLL_CTL_ADD;
 	else if (!(flags & (CF_POLR | CF_POLW)))
@@ -638,6 +644,9 @@ static ssize_t recv_raw(struct conn *conn, void *ptr, ssize_t len)
 {
 	ssize_t ret;
 
+	if (conn->flags & CF_HUPC)
+		return 0;
+
 	if (!ptr && !MSG_TRUNC) {
 		ptr = buf;
 		if (len > sizeof(buf))
@@ -656,6 +665,10 @@ static ssize_t recv_raw(struct conn *conn, void *ptr, ssize_t len)
 		conn->flags |= CF_ERR;
 		return -2;
 	}
+
+	if (ret < len && (conn->flags & CF_HUPR))
+		conn->flags |= CF_HUPC; // hang up confirmed
+
 	return ret;
 }
 
@@ -723,6 +736,9 @@ static ssize_t recv_ssl(struct conn *conn, void *ptr, ssize_t len)
 {
 	ssize_t ret;
 
+	if (conn->flags & CF_HUPC)
+		return 0;
+
 	if (!ptr) {
 		/* drain */
 		ptr = buf;
@@ -747,6 +763,10 @@ static ssize_t recv_ssl(struct conn *conn, void *ptr, ssize_t len)
 			ret = -2;
 		}
 	}
+
+	if (ret < len && (conn->flags & CF_HUPR))
+		conn->flags |= CF_HUPC; // hang up confirmed
+
 	return ret;
 }
 #endif
@@ -1671,6 +1691,9 @@ void work(void *arg)
 
 			if (thr->events[i].events & EPOLLOUT)
 				conn->flags &= ~CF_BLKW;
+
+			if (thr->events[i].events & (EPOLLHUP|EPOLLRDHUP))
+				conn->flags |= CF_HUPR;
 
 			if (thr->events[i].events & EPOLLERR)
 				conn->flags |= CF_ERR;
