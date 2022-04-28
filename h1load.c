@@ -106,6 +106,7 @@ struct freq_ctr {
 #define CF_CHNK 0x00000100    // chunked encoding
 #define CF_HUPR 0x00000200    // HUP/RDHUP reported by poller
 #define CF_HUPC 0x00000400    // HUP/RDHUP confirmed
+#define CF_POLL 0x00000800    // already polled
 
 /* connection states */
 enum cstate {
@@ -574,6 +575,14 @@ void update_poll(int ep, int fd, uint32_t flags, void *ptr)
 	int op;
 
 	ev.data.ptr = ptr;
+
+#if defined(EPOLLET)
+	/* enable the polling only once, on both sides */
+	if (flags & CF_POLL)
+		return;
+	ev.events = EPOLLOUT | EPOLLRDHUP | EPOLLHUP | EPOLLIN | EPOLLET;
+	op = EPOLL_CTL_ADD;
+#else
 	ev.events = ((flags & CF_BLKW) ? EPOLLOUT : 0) | ((flags & CF_BLKR) ? (EPOLLRDHUP|EPOLLHUP|EPOLLIN) : 0);
 	if (!(flags & (CF_POLR | CF_POLW)))
 		op = EPOLL_CTL_ADD;
@@ -581,6 +590,7 @@ void update_poll(int ep, int fd, uint32_t flags, void *ptr)
 		op = EPOLL_CTL_DEL;
 	else
 		op = EPOLL_CTL_MOD;
+#endif
 
 	epoll_ctl(ep, op, fd, &ev);
 }
@@ -593,6 +603,7 @@ static inline void update_conn(int ep, struct conn *conn)
 	if ((!(flags & CF_BLKW) ^ !(flags & CF_POLW)) |
 	    (!(flags & CF_BLKR) ^ !(flags & CF_POLR))) {
 		update_poll(ep, conn->fd, flags, conn);
+		conn->flags |= CF_POLL;
 		if (conn->flags & CF_BLKW)
 			conn->flags |= CF_POLW;
 		else
