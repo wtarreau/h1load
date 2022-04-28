@@ -785,7 +785,7 @@ struct conn *pre_heat_connection(struct thread *t)
 	if (!conn)
 		goto fail_conn;
 
-	conn->fd = socket(AF_INET, SOCK_STREAM, 0);
+	conn->fd = socket(t->dst.ss_family, SOCK_STREAM, 0);
 	if (conn->fd < 0)
 		goto fail_sock;
 
@@ -806,7 +806,7 @@ struct conn *pre_heat_connection(struct thread *t)
 	 */
 	if (!t->curconn) {
 		memset(&addr, 0, sizeof(addr));
-		addr.ss_family = thr->dst.ss_family;
+		addr.ss_family = t->dst.ss_family;
 		if (bind(conn->fd, (struct sockaddr *)&addr, sizeof(addr)))
 			goto fail_setup;
 		t->pre_heat = addr;
@@ -856,7 +856,7 @@ struct conn *add_connection(struct thread *t)
 	if (!conn)
 		goto fail_conn;
 
-	conn->fd = socket(AF_INET, SOCK_STREAM, 0);
+	conn->fd = socket(t->dst.ss_family, SOCK_STREAM, 0);
 	if (conn->fd < 0)
 		goto fail_sock;
 
