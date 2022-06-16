@@ -719,6 +719,12 @@ static ssize_t send_ssl(struct conn *conn, void *ptr, ssize_t len)
 {
 	ssize_t ret;
 
+	if (conn->flags & (CF_BLKW | CF_ERR)) {
+		if (conn->flags & CF_ERR)
+			return -2;
+		return -1;
+	}
+
 	ret = SSL_write(conn->ssl, ptr, len);
 	if (ret < 0) {
 		int err = SSL_get_error(conn->ssl, ret);
