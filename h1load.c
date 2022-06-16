@@ -112,6 +112,7 @@ struct freq_ctr {
 enum cstate {
 	CS_NEW = 0,   // just allocated
 	CS_CON,       // pending connection attempt
+	CS_HSK,       // pending SSL handshake
 	CS_REQ,       // count a new request and check vs global limits
 	CS_SND,       // send attempt (headers or body) (a req is active)
 	CS_RCV,       // recv attempt (headers or body) (a req is active)
@@ -911,19 +912,9 @@ struct conn *add_connection(struct thread *t)
 		LIST_APPEND(&t->iq, &conn->link);
 	}
 	else {
-		conn->state = CS_REQ;
+		conn->state = CS_HSK;
 		LIST_APPEND(&t->iq, &conn->link);
 	}
-
-#if defined(USE_SSL)
-	if (t->is_ssl) {
-		conn->ssl = SSL_new(t->ssl_ctx);
-		if (!conn->ssl)
-			goto fail_setup;
-		SSL_set_fd(conn->ssl, conn->fd);
-		SSL_connect(conn->ssl);
-	}
-#endif
 
 	if (arg_rate)
 		update_freq_ctr(&t->conn_rate, 1, t->now);
@@ -1096,12 +1087,8 @@ void handle_conn(struct thread *t, struct conn *conn)
 	uint64_t ttfb, ttlb;     // time-to-first-byte, time-to-last-byte (in us)
 
 	if (conn->state == CS_CON) {
-		if (conn->flags & CF_ERR) {
-			if (arg_serr)
-				__sync_fetch_and_or(&running, THR_STOP_ALL);
-			t->tot_cerr++;
-			goto close_conn;
-		}
+		if (conn->flags & CF_ERR)
+			goto err_conn;
 
 		if (conn->flags & CF_BLKW) {
 			if (expired) {
@@ -1112,6 +1099,34 @@ void handle_conn(struct thread *t, struct conn *conn)
 		}
 
 		/* finally ready, fall through */
+		conn->state = CS_HSK;
+	}
+
+	if (conn->state == CS_HSK) {
+#if defined(USE_SSL)
+		if (t->is_ssl) {
+			int ret;
+
+			conn->ssl = SSL_new(t->ssl_ctx);
+			if (!conn->ssl)
+				goto err_conn;
+
+			SSL_set_fd(conn->ssl, conn->fd);
+			ret = SSL_connect(conn->ssl);
+			if (ret < 0) {
+				int err = SSL_get_error(conn->ssl, ret);
+
+				if (err == SSL_ERROR_WANT_WRITE) {
+					cant_send(conn);
+				}
+				else if (err == SSL_ERROR_WANT_READ) {
+					cant_recv(conn);
+				}
+				else
+					goto err_conn;
+			}
+		}
+#endif
 		conn->state = CS_REQ;
 	}
 
@@ -1538,6 +1553,13 @@ void handle_conn(struct thread *t, struct conn *conn)
  done:
 	update_conn(thr->epollfd, conn);
 	return;
+
+ err_conn:
+	/* connection setup error (conn / hsk) */
+	conn->flags |= CF_ERR;
+	if (arg_serr)
+		__sync_fetch_and_or(&running, THR_STOP_ALL);
+	t->tot_cerr++;
 
  kill_conn:
 	setsockopt(conn->fd, SOL_SOCKET, SO_LINGER, &nolinger, sizeof(nolinger));
