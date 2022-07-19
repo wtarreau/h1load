@@ -31,6 +31,7 @@
 #include <sys/time.h>
 #include <sys/user.h>
 #include <sys/epoll.h>
+#include <sys/resource.h>
 #include <netinet/tcp.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -2343,6 +2344,7 @@ int main(int argc, char **argv)
 	struct sockaddr_storage ss;
 	struct errmsg err = { .len = 0, .size = 100, .msg = alloca(100) };
 	struct timeval show_date;
+	struct rlimit limit;
 	int req_len;
 	char *host;
 	char c;
@@ -2461,6 +2463,13 @@ int main(int argc, char **argv)
 			usage(name, 1);
 
 		argv++; argc--;
+	}
+
+	getrlimit(RLIMIT_NOFILE, &limit);
+	if (limit.rlim_max != RLIM_INFINITY) {
+		limit.rlim_cur = limit.rlim_max;
+		if (setrlimit(RLIMIT_NOFILE, &limit) == -1)
+			fprintf(stderr, "Warning: couldn't raise the NOFILE limit to %u\n", (uint32_t)limit.rlim_max);
 	}
 
 	if (arg_thrd > arg_conn)
