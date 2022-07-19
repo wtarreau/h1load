@@ -1608,7 +1608,7 @@ unsigned long check_timeouts(struct thread *t, struct list *list)
 	return 0;
 }
 
-void work(void *arg)
+void *work(void *arg)
 {
 	struct thread *thread = (struct thread *)arg;
 	struct conn *conn;
@@ -1624,7 +1624,7 @@ void work(void *arg)
 	 */
 	for (i = 0; i < thr->maxconn; i++) {
 		if (pre_heat_connection(thr) == NULL) {
-			fprintf(stderr, "connection allocation error in thread %d after %d connections.\n", i, thr->curconn);
+			fprintf(stderr, "connection allocation error in thread %d after %d connections.\n", thr->tid, thr->curconn);
 			goto quit;
 		}
 	}
@@ -1940,7 +1940,7 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss,
 		return -1;
 	}
 
-	if (pthread_create(&threads[th].pth, NULL, (void *)work, &threads[th]) < 0) {
+	if (pthread_create(&threads[th].pth, NULL, work, &threads[th]) < 0) {
 		err->len = snprintf(err->msg, err->size, "Failed to create thread %d\n", th);
 		return -1;
 	}
