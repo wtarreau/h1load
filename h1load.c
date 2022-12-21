@@ -2511,6 +2511,9 @@ int main(int argc, char **argv)
 	if (!argc)
 		usage(name, 1);
 
+	if (argc > 1)
+		die(1, "Unhandled extraneous argument '%s' after URL.\n", argv[1]);
+
 	if (strncmp(*argv, "https://", 8) == 0) {
 #if defined(USE_SSL)
 		is_ssl = 1;
