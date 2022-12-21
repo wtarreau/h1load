@@ -226,6 +226,7 @@ char *arg_hdr;
 #if defined(USE_SSL)
 char *arg_ssl_cipher_list;   // cipher list for TLSv1.2 and below
 char *arg_ssl_cipher_suites; // cipher suites for TLSv1.3 and above
+int arg_ssl_proto_ver = -1;  // protocol version to use
 #endif
 
 static char *start_line;
@@ -1800,6 +1801,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    " SSL options:\n"
 	    "  --cipher-list <cipher list> for TLSv1.2 and below\n"
 	    "  --cipher-suites <cipher suites> for TLSv1.3 and above\n"
+	    "  --tls-ver SSL3|TLS1.0|TLS1.1|TLS1.2|TLS1.3 force TLS protocol version\n"
 #endif
 	    "\n"
 	    ,name);
@@ -1907,6 +1909,14 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss,
 
 		if (arg_ssl_cipher_suites && !SSL_CTX_set_ciphersuites(threads[th].ssl_ctx, arg_ssl_cipher_suites)) {
 			err->len = snprintf(err->msg, err->size, "Failed to set cipher suites on SSL context for thread %d\n", th);
+			return -1;
+		}
+		if ((arg_ssl_proto_ver != -1) && !SSL_CTX_set_min_proto_version(threads[th].ssl_ctx, arg_ssl_proto_ver)) {
+			err->len = snprintf(err->msg, err->size, "Failed to set minimal protocol version on SSL context for thread %d\n", th);
+			return -1;
+		}
+		if ((arg_ssl_proto_ver != -1) && !SSL_CTX_set_max_proto_version(threads[th].ssl_ctx, arg_ssl_proto_ver)) {
+			err->len = snprintf(err->msg, err->size, "Failed to set maximal protocol version on SSL context for thread %d\n", th);
 			return -1;
 		}
 	}
@@ -2489,6 +2499,23 @@ int main(int argc, char **argv)
 			if (argc < 2)
 				usage(name, 1);
 			arg_ssl_cipher_suites = argv[1];
+			argv++; argc--;
+		}
+		else if (strcmp(argv[0], "--tls-ver") == 0) {
+			if (argc < 2)
+				usage(name, 1);
+			if (strcmp(argv[1], "SSL3") == 0)
+				arg_ssl_proto_ver = SSL3_VERSION;
+			else if (strcmp(argv[1], "TLS1.0") == 0)
+				arg_ssl_proto_ver = TLS1_VERSION;
+			else if (strcmp(argv[1], "TLS1.1") == 0)
+				arg_ssl_proto_ver = TLS1_1_VERSION;
+			else if (strcmp(argv[1], "TLS1.2") == 0)
+				arg_ssl_proto_ver = TLS1_2_VERSION;
+			else if (strcmp(argv[1], "TLS1.3") == 0)
+				arg_ssl_proto_ver = TLS1_3_VERSION;
+			else
+				usage(name, 1);
 			argv++; argc--;
 		}
 #endif
