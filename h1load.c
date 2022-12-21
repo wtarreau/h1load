@@ -187,6 +187,10 @@ struct thread {
 	struct epoll_event *events;  // event buffer
 #if defined(USE_SSL)
 	SSL_CTX *ssl_ctx;            // ssl context
+	unsigned char *ssl_sess;     // stored ssl session;
+	int ssl_sess_size;           // size of current stored session.
+	int ssl_sess_allocated;      // current allocated size of stored session
+
 #endif
 	__attribute__((aligned(64))) union { } __pad;
 };
@@ -227,6 +231,7 @@ char *arg_hdr;
 char *arg_ssl_cipher_list;   // cipher list for TLSv1.2 and below
 char *arg_ssl_cipher_suites; // cipher suites for TLSv1.3 and above
 int arg_ssl_proto_ver = -1;  // protocol version to use
+int arg_ssl_reuse_sess = 0;  // reuse session on TLS
 #endif
 
 static char *start_line;
@@ -1124,6 +1129,24 @@ void handle_conn(struct thread *t, struct conn *conn)
 				goto err_conn;
 
 			SSL_set_fd(conn->ssl, conn->fd);
+			SSL_set_ex_data(conn->ssl, 0, t);
+
+			/* reuse the session if available */
+			if (t->ssl_sess_size) {
+				const unsigned char *ptr = t->ssl_sess;
+				SSL_SESSION *sess = d2i_SSL_SESSION(NULL, &ptr, t->ssl_sess_size);
+
+				if (sess) {
+					SSL_set_session(conn->ssl, sess);
+					/* if store succeed the SSL_set_session increase
+					 * the ref count on SSL_SESSION, so we must
+					 * 'free' it to decrease regardless the store
+					 * succeed
+					 */
+					SSL_SESSION_free(sess);
+				}
+			}
+
 			ret = SSL_connect(conn->ssl);
 			if (ret < 0) {
 				int err = SSL_get_error(conn->ssl, ret);
@@ -1801,6 +1824,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    " SSL options:\n"
 	    "  --cipher-list <cipher list> for TLSv1.2 and below\n"
 	    "  --cipher-suites <cipher suites> for TLSv1.3 and above\n"
+	    "  --tls-reuse    enable SSL session reuse\n"
 	    "  --tls-ver SSL3|TLS1.0|TLS1.1|TLS1.2|TLS1.3 force TLS protocol version\n"
 #endif
 	    "\n"
@@ -1856,6 +1880,28 @@ int addr_to_ss(char *str, struct sockaddr_storage *ss, struct errmsg *err)
 
 	return 0;
 }
+#if defined(USE_SSL)
+/* SSL callback used when a new session is created while connecting */
+static int ssl_sess_new_srv_cb(SSL *ssl, SSL_SESSION *sess)
+{
+	struct thread *t = SSL_get_ex_data(ssl, 0);
+	int len;
+	unsigned char *ptr;
+
+	len = i2d_SSL_SESSION(sess, NULL);
+	if (t->ssl_sess && t->ssl_sess_allocated >= len)
+		ptr = t->ssl_sess;
+	else {
+		ptr = realloc(t->ssl_sess, len);
+		t->ssl_sess_allocated = len;
+		t->ssl_sess = ptr;
+	}
+
+	t->ssl_sess_size = i2d_SSL_SESSION(sess, &ptr);
+
+	return 0;
+}
+#endif
 
 /* creates and initializes thread <th>, returns <0 on failure. The initial
  * request is supposed to still be in <buf>.
@@ -1901,6 +1947,9 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss,
 		                 SSL_MODE_RELEASE_BUFFERS);
 		SSL_CTX_set_verify(threads[th].ssl_ctx, SSL_VERIFY_NONE, NULL);
 		SSL_CTX_set_session_cache_mode(threads[th].ssl_ctx, SSL_SESS_CACHE_CLIENT | SSL_SESS_CACHE_NO_INTERNAL_STORE);
+
+		if (arg_ssl_reuse_sess)
+			SSL_CTX_sess_set_new_cb(threads[th].ssl_ctx, ssl_sess_new_srv_cb);
 
 		if (arg_ssl_cipher_list && !SSL_CTX_set_cipher_list(threads[th].ssl_ctx, arg_ssl_cipher_list)) {
 			err->len = snprintf(err->msg, err->size, "Failed to set cipher list on SSL context for thread %d\n", th);
@@ -2500,6 +2549,9 @@ int main(int argc, char **argv)
 				usage(name, 1);
 			arg_ssl_cipher_suites = argv[1];
 			argv++; argc--;
+		}
+		else if (strcmp(argv[0], "--tls-reuse") == 0) {
+			arg_ssl_reuse_sess = 1;
 		}
 		else if (strcmp(argv[0], "--tls-ver") == 0) {
 			if (argc < 2)
