@@ -223,6 +223,10 @@ int arg_accu = 0;     // more accurate req/time measurements in keep-alive
 int arg_hscd = 0;     // HTTP status code distribution
 char *arg_url;
 char *arg_hdr;
+#if defined(USE_SSL)
+char *arg_ssl_cipher_list;   // cipher list for TLSv1.2 and below
+char *arg_ssl_cipher_suites; // cipher suites for TLSv1.3 and above
+#endif
 
 static char *start_line;
 static char *hdr_block;
@@ -1792,6 +1796,11 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -S            show HTTP status codes distribution\n"
 	    "  -h            display this help\n"
 	    "  -v            increase verbosity\n"
+#if defined(USE_SSL)
+	    " SSL options:\n"
+	    "  --cipher-list <cipher list> for TLSv1.2 and below\n"
+	    "  --cipher-suites <cipher suites> for TLSv1.3 and above\n"
+#endif
 	    "\n"
 	    ,name);
 }
@@ -1890,6 +1899,16 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss,
 		                 SSL_MODE_RELEASE_BUFFERS);
 		SSL_CTX_set_verify(threads[th].ssl_ctx, SSL_VERIFY_NONE, NULL);
 		SSL_CTX_set_session_cache_mode(threads[th].ssl_ctx, SSL_SESS_CACHE_CLIENT | SSL_SESS_CACHE_NO_INTERNAL_STORE);
+
+		if (arg_ssl_cipher_list && !SSL_CTX_set_cipher_list(threads[th].ssl_ctx, arg_ssl_cipher_list)) {
+			err->len = snprintf(err->msg, err->size, "Failed to set cipher list on SSL context for thread %d\n", th);
+			return -1;
+		}
+
+		if (arg_ssl_cipher_suites && !SSL_CTX_set_ciphersuites(threads[th].ssl_ctx, arg_ssl_cipher_suites)) {
+			err->len = snprintf(err->msg, err->size, "Failed to set cipher suites on SSL context for thread %d\n", th);
+			return -1;
+		}
 	}
 #endif
 
@@ -2459,6 +2478,20 @@ int main(int argc, char **argv)
 			arg_hscd++;
 		else if (strcmp(argv[0], "-h") == 0)
 			usage(name, 0);
+#if defined(USE_SSL)
+		else if (strcmp(argv[0], "--cipher-list") == 0) {
+			if (argc < 2)
+				usage(name, 1);
+			arg_ssl_cipher_list = argv[1];
+			argv++; argc--;
+		}
+		else if (strcmp(argv[0], "--cipher-suites") == 0) {
+			if (argc < 2)
+				usage(name, 1);
+			arg_ssl_cipher_suites = argv[1];
+			argv++; argc--;
+		}
+#endif
 		else
 			usage(name, 1);
 
