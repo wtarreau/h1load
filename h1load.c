@@ -58,7 +58,7 @@
 #endif
 
 #ifndef MAXTHREADS
-#define MAXTHREADS 64
+#define MAXTHREADS 256
 #endif
 
 #ifndef EPOLLRDHUP
