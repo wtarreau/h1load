@@ -850,8 +850,10 @@ struct conn *pre_heat_connection(struct thread_ctx *t)
 	if (setsockopt(conn->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) == -1)
 		goto fail_setup;
 
+#if defined(TCP_QUICKACK)
 	if (arg_fast && setsockopt(conn->fd, IPPROTO_TCP, TCP_QUICKACK, &zero, sizeof(zero)) == -1)
 		goto fail_setup;
+#endif
 
 	/* only the first connection assigns a listening port, better stay
 	 * short on this as bind() takes a huge amount of time finding a port.
@@ -921,8 +923,10 @@ struct conn *add_connection(struct thread_ctx *t)
 	if (setsockopt(conn->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) == -1)
 		goto fail_setup;
 
+#if defined(TCP_QUICKACK)
 	if (arg_fast && setsockopt(conn->fd, IPPROTO_TCP, TCP_QUICKACK, &zero, sizeof(zero)) == -1)
 		goto fail_setup;
+#endif
 
 	if (connect(conn->fd, (struct sockaddr *)&t->dst, sizeof(t->dst)) < 0) {
 		if (errno != EINPROGRESS)
