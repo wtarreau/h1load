@@ -10,7 +10,7 @@ CROSS_COMPILE :=
 # certain paths, and SSL_LFLAGS to load libs from certain paths.
 USE_SSL    := 1
 
-CC         := $(CROSS_COMPILE)gcc
+CC         := $(CROSS_COMPILE)cc
 OPT_CFLAGS := -O3
 CPU_CFLAGS := -fomit-frame-pointer
 DEB_CFLAGS := -Wall -g
