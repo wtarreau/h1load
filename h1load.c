@@ -861,7 +861,7 @@ struct conn *pre_heat_connection(struct thread_ctx *t)
 	if (!t->curconn) {
 		memset(&addr, 0, sizeof(addr));
 		addr.ss_family = t->dst.ss_family;
-		if (bind(conn->fd, (struct sockaddr *)&addr, sizeof(addr)))
+		if (bind(conn->fd, (struct sockaddr *)&addr, t->dst.ss_family == PF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6)))
 			goto fail_setup;
 		t->pre_heat = addr;
 	}
@@ -928,7 +928,7 @@ struct conn *add_connection(struct thread_ctx *t)
 		goto fail_setup;
 #endif
 
-	if (connect(conn->fd, (struct sockaddr *)&t->dst, sizeof(t->dst)) < 0) {
+	if (connect(conn->fd, (struct sockaddr *)&t->dst, t->dst.ss_family == PF_INET ? sizeof(struct sockaddr_in) : sizeof(struct sockaddr_in6)) < 0) {
 		if (errno != EINPROGRESS)
 			goto fail_setup;
 		cant_send(conn);
