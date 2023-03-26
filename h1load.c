@@ -143,7 +143,7 @@ struct conn {
 };
 
 /* one thread */
-struct thread {
+struct thread_ctx {
 	struct list wq;              // wait queue: I/O
 	struct list sq[32];          // sleep queue: sleep
 	struct list rq;              // run queue: tasks to call
@@ -247,14 +247,14 @@ static char *hdr_block;
 #define THR_DUR_OVER 0x10000000  // test duration is over
 #define THR_COUNT    0x0FFFFFFF  // mask applied to check thr count
 volatile uint32_t running = 0; // # = running threads + THR_* above
-struct thread threads[MAXTHREADS];
+struct thread_ctx threads[MAXTHREADS];
 struct timeval start_date, stop_date, now;
 volatile uint32_t throttle = 0;  // pass to mul32hi() if not null.
 
 volatile unsigned long global_req = 0; // global (started) req counter to sync threads.
 
 /* current thread */
-__thread struct thread *thr;
+__thread struct thread_ctx *thr;
 __thread char buf[65536];
 
 /* unsigned 16-bit float:
@@ -826,7 +826,7 @@ struct conn *new_conn()
  * shown huge 25ms times around socket() alone during initial allocs!
  * This will also help detect insufficient limits.
  */
-struct conn *pre_heat_connection(struct thread *t)
+struct conn *pre_heat_connection(struct thread_ctx *t)
 {
 	struct conn *conn;
 	struct epoll_event ev;
@@ -900,7 +900,7 @@ struct conn *pre_heat_connection(struct thread *t)
 }
 
 /* Try to establish a connection to t->dst. Return the conn or NULL in case of error */
-struct conn *add_connection(struct thread *t)
+struct conn *add_connection(struct thread_ctx *t)
 {
 	struct conn *conn;
 
@@ -1098,7 +1098,7 @@ int parse_resp(struct conn *conn, char *buf, int len, int *rstatus)
 }
 
 /* handles I/O and timeouts for connection <conn> on thread <t> */
-void handle_conn(struct thread *t, struct conn *conn)
+void handle_conn(struct thread_ctx *t, struct conn *conn)
 {
 	int expired = !!(conn->flags & CF_EXP);
 	int loops;
@@ -1623,7 +1623,7 @@ void handle_conn(struct thread *t, struct conn *conn)
 }
 
 /* returns the delay till the next event, or zero if none */
-unsigned long check_timeouts(struct thread *t, struct list *list)
+unsigned long check_timeouts(struct thread_ctx *t, struct list *list)
 {
 	struct conn *conn;
 	unsigned long remain;
@@ -1641,7 +1641,7 @@ unsigned long check_timeouts(struct thread *t, struct list *list)
 
 void *work(void *arg)
 {
-	struct thread *thread = (struct thread *)arg;
+	struct thread_ctx *thread = (struct thread_ctx *)arg;
 	struct conn *conn;
 	int nbev, i;
 	int budget;
@@ -1887,7 +1887,7 @@ int addr_to_ss(char *str, struct sockaddr_storage *ss, struct errmsg *err)
 /* SSL callback used when a new session is created while connecting */
 static int ssl_sess_new_srv_cb(SSL *ssl, SSL_SESSION *sess)
 {
-	struct thread *t = SSL_get_ex_data(ssl, 0);
+	struct thread_ctx *t = SSL_get_ex_data(ssl, 0);
 	int len;
 	unsigned char *ptr;
 
