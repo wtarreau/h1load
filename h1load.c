@@ -70,6 +70,9 @@ struct list {
 	struct list *n, *p;
 };
 
+#undef LIST_INIT
+#undef LIST_NEXT
+
 #define LIST_INIT(lh)         ((lh)->n = (lh)->p = (lh))
 #define LIST_ISEMPTY(lh)      ((lh)->n == (lh))
 #define LIST_APPEND(lh, el)   ({ (el)->p = (lh)->p; (el)->p->n = (lh)->p = (el); (el)->n = (lh); (el); })
