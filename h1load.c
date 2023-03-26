@@ -847,10 +847,10 @@ struct conn *pre_heat_connection(struct thread_ctx *t)
 	if (setsockopt(conn->fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) == -1)
 		goto fail_setup;
 
-	if (setsockopt(conn->fd, SOL_TCP, TCP_NODELAY, &one, sizeof(one)) == -1)
+	if (setsockopt(conn->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) == -1)
 		goto fail_setup;
 
-	if (arg_fast && setsockopt(conn->fd, SOL_TCP, TCP_QUICKACK, &zero, sizeof(zero)) == -1)
+	if (arg_fast && setsockopt(conn->fd, IPPROTO_TCP, TCP_QUICKACK, &zero, sizeof(zero)) == -1)
 		goto fail_setup;
 
 	/* only the first connection assigns a listening port, better stay
@@ -918,10 +918,10 @@ struct conn *add_connection(struct thread_ctx *t)
 	if (setsockopt(conn->fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof(one)) == -1)
 		goto fail_setup;
 
-	if (setsockopt(conn->fd, SOL_TCP, TCP_NODELAY, &one, sizeof(one)) == -1)
+	if (setsockopt(conn->fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one)) == -1)
 		goto fail_setup;
 
-	if (arg_fast && setsockopt(conn->fd, SOL_TCP, TCP_QUICKACK, &zero, sizeof(zero)) == -1)
+	if (arg_fast && setsockopt(conn->fd, IPPROTO_TCP, TCP_QUICKACK, &zero, sizeof(zero)) == -1)
 		goto fail_setup;
 
 	if (connect(conn->fd, (struct sockaddr *)&t->dst, sizeof(t->dst)) < 0) {
