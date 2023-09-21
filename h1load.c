@@ -1683,6 +1683,19 @@ void *work(void *arg)
 		usleep(10000);
 	}
 
+	/* let's pre-initialize the rate counters to pretend the
+	 * frequency was already stable at the target speed so
+	 * that we don't send an initial burst.
+	 */
+	gettimeofday(&thr->now, NULL);
+	if (arg_rate) {
+		uint32_t rate = (arg_rate + arg_thrd - 1) / arg_thrd;
+
+		thr->req_rate.curr_sec = thr->now.tv_sec;
+		thr->req_rate.prev_ctr = throttle ? 0 : rate;
+		thr->req_rate.curr_ctr = throttle ? 0 : mul32hi(rate, thr->now.tv_usec * 4294U);
+	}
+
 	while (!(running & THR_STOP_ALL) && (!(running & THR_ENDING) || thr->cur_req)) {
 		maxconn = thr->maxconn;
 
