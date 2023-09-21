@@ -1510,8 +1510,12 @@ void handle_conn(struct thread_ctx *t, struct conn *conn)
 			 * events. But we do still need to wait a bit to leave enough room
 			 * for new connections.
 			 */
-			if (throttle && wait > 2000)
-				wait = 2000;
+			if (throttle) {
+				if (wait > 2000)
+					wait = 2000;
+				if (wait * 10 > arg_slow)
+					wait = arg_slow / 10;
+			}
 
 			if (wait > wait_time)
 				wait_time = wait;
