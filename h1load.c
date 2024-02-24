@@ -1411,14 +1411,17 @@ void handle_conn(struct thread_ctx *t, struct conn *conn)
 							conn->to_recv = 0;
 						}
 					}
-					else if ((unsigned char)(c - '0') <= 9)
-						conn->chnk_size = (conn->chnk_size << 4) + c - '0';
-					else if ((unsigned char)((c|0x20) - 'a') <= 6)
-						conn->chnk_size = (conn->chnk_size << 4) + (c|0x20) - 'a' + 0xa;
 					else {
-						t->tot_perr++;
-						t->tot_done++;
-						goto kill_conn;
+						switch (c) {
+						case '0' ... '9': c -= '0'; break;
+						case 'A' ... 'A': c -= 'A' - 0xa; break;
+						case 'a' ... 'f': c -= 'a' - 0xa; break;
+						default:
+							t->tot_perr++;
+							t->tot_done++;
+							goto kill_conn;
+						}
+						conn->chnk_size = (conn->chnk_size << 4) + c;
 					}
 				}
 				parsed = bufptr - buf;
