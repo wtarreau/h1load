@@ -1095,7 +1095,8 @@ void handle_conn(struct thread_ctx *t, struct conn *conn)
 {
 	int expired = !!(conn->flags & CF_EXP);
 	int loops;
-	int ret, parsed;
+	int parsed;
+	ssize_t ret;
 	uint32_t wait_time;
 	uint64_t ttfb, ttlb;     // time-to-first-byte, time-to-last-byte (in us)
 
