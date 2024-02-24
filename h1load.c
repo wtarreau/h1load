@@ -1354,71 +1354,74 @@ void handle_conn(struct thread_ctx *t, struct conn *conn)
 			}
 
 			while (ret && conn->to_recv != -1) {
+				const char *bufptr;
+
 				/* deduce currently bufferred bytes from C-L or previous partial chunk */
 				if (conn->to_recv) {
 					if (conn->to_recv >= ret) {
 						conn->to_recv -= ret;
 						ret = 0;
-						break;
 					}
 					else {
 						parsed += conn->to_recv;
 						ret -= conn->to_recv;
 						conn->to_recv = 0;
-						if (!(conn->flags & CF_CHNK))
-							break;
 					}
+					continue;
 				}
+
+				/* to_recv == 0 : either end of transfer or chunk size */
+
+				if (!(conn->flags & CF_CHNK))
+					break;
 
 				/* next data, if any, starts at <buf+parsed> for <ret>
 				 * bytes. In practice it's only the case with chunking.
 				 */
-				if (conn->flags & CF_CHNK && !conn->to_recv) {
-					/* !to_recv+CF_CHNK => reading chunk size.
-					 * We're using a local pointer to the thread-local
-					 * one to avoid heavy thread-local accesses in the
-					 * hot loop (~15% difference)!
-					 */
-					const char *bufptr = buf + parsed;
 
-					while (ret && conn->to_recv < ret) {
-						char c = *bufptr++;
+				/* !to_recv+CF_CHNK => reading chunk size.
+				 * We're using a local pointer to the thread-local
+				 * one to avoid heavy thread-local accesses in the
+				 * hot loop (~15% difference)!
+				 */
+				bufptr = buf + parsed;
+				while (ret && conn->to_recv < ret) {
+					char c = *bufptr++;
 
-						ret--;
-						if (c == '\r') {
-							/* commit size into to_recv and count +1 for LF and +2
-							 * for post-data CRLF. We should have at most 3 bytes
-							 * left in the buffer (LF, CR, LF). We'll truncate them
-							 * in case there are trailers or extra data.
-							 */
-							conn->to_recv = conn->chnk_size + 1 + 2;
-							if (!conn->chnk_size) { // final chunk
-								if (ret > 3)
-									ret = 3;
-								conn->flags &= ~CF_CHNK;
-								break;
-							}
-
-							conn->chnk_size = 0;
-							if (conn->to_recv <= ret) {
-								/* contents still present in buffer */
-								bufptr += conn->to_recv;
-								ret -= conn->to_recv;
-								conn->to_recv = 0;
-							}
+					ret--;
+					if (c == '\r') {
+						/* commit size into to_recv and count +1 for LF and +2
+						 * for post-data CRLF. We should have at most 3 bytes
+						 * left in the buffer (LF, CR, LF). We'll truncate them
+						 * in case there are trailers or extra data.
+						 */
+						conn->to_recv = conn->chnk_size + 1 + 2;
+						if (!conn->chnk_size) { // final chunk
+							if (ret > 3)
+								ret = 3;
+							conn->flags &= ~CF_CHNK;
+							break;
 						}
-						else if ((unsigned char)(c - '0') <= 9)
-							conn->chnk_size = (conn->chnk_size << 4) + c - '0';
-						else if ((unsigned char)((c|0x20) - 'a') <= 6)
-							conn->chnk_size = (conn->chnk_size << 4) + (c|0x20) - 'a' + 0xa;
-						else {
-							t->tot_perr++;
-							t->tot_done++;
-							goto kill_conn;
+
+						conn->chnk_size = 0;
+						if (conn->to_recv <= ret) {
+							/* contents still present in buffer */
+							bufptr += conn->to_recv;
+							ret -= conn->to_recv;
+							conn->to_recv = 0;
 						}
 					}
-					parsed = bufptr - buf;
+					else if ((unsigned char)(c - '0') <= 9)
+						conn->chnk_size = (conn->chnk_size << 4) + c - '0';
+					else if ((unsigned char)((c|0x20) - 'a') <= 6)
+						conn->chnk_size = (conn->chnk_size << 4) + (c|0x20) - 'a' + 0xa;
+					else {
+						t->tot_perr++;
+						t->tot_done++;
+						goto kill_conn;
+					}
 				}
+				parsed = bufptr - buf;
 			}
 		}
 
