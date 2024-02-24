@@ -677,8 +677,14 @@ static ssize_t recv_raw(struct conn *conn, void *ptr, ssize_t len)
 			cant_recv(conn);
 			return -1;
 		}
-		conn->flags |= CF_ERR;
-		return -2;
+		/* that's an error, but only if we're not draining,
+		 * otherwise it's an end.
+		 */
+		if (ptr) {
+			conn->flags |= CF_ERR;
+			return -2;
+		}
+		return 0;
 	}
 
 	if (ret < len && (conn->flags & CF_HUPR))
@@ -780,8 +786,15 @@ static ssize_t recv_ssl(struct conn *conn, void *ptr, ssize_t len)
 			ret = -1;
 		}
 		else {
-			conn->flags |= CF_ERR;
-			ret = -2;
+			/* that's an error, but only if we're not draining,
+			 * otherwise it's an end.
+			 */
+			if (ptr) {
+				conn->flags |= CF_ERR;
+				ret = -2;
+			} else {
+				ret = 0;
+			}
 		}
 	}
 
@@ -1276,7 +1289,11 @@ void handle_conn(struct thread_ctx *t, struct conn *conn)
 
 	if (conn->state == CS_RCV) {
 		if (conn->flags & CF_ERR) {
-			t->tot_xerr++;
+			/* let's not count a late error reported after the end
+			 * of the payload nor when close mode is used.
+			 */
+			if (conn->to_recv && conn->to_recv != -1)
+				t->tot_xerr++;
 			t->tot_done++;
 			goto close_conn;
 		}
