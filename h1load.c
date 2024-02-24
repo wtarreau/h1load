@@ -1836,9 +1836,13 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 #if defined(USE_SSL)
 	    "SSL options:\n"
 	    "  --cipher-list <cipher list>                   for TLSv1.2 and below\n"
+# ifdef HAVE_SSL_CTX_SET_CIPHERSUITES
 	    "  --cipher-suites <cipher suites>               for TLSv1.3 and above\n"
+# endif
 	    "  --tls-reuse                                   enable SSL session reuse\n"
+# if (OPENSSL_VERSION_NUMBER >= 0x1010000fL)
 	    "  --tls-ver SSL3|TLS1.0|TLS1.1|TLS1.2|TLS1.3    force TLS protocol version\n"
+# endif
 #endif
 	    "\n"
 	    ,name);
@@ -1969,10 +1973,14 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss,
 			return -1;
 		}
 
+# ifdef HAVE_SSL_CTX_SET_CIPHERSUITES
 		if (arg_ssl_cipher_suites && !SSL_CTX_set_ciphersuites(threads[th].ssl_ctx, arg_ssl_cipher_suites)) {
 			err->len = snprintf(err->msg, err->size, "Failed to set cipher suites on SSL context for thread %d\n", th);
 			return -1;
 		}
+# endif
+
+# if (OPENSSL_VERSION_NUMBER >= 0x1010000fL)
 		if ((arg_ssl_proto_ver != -1) && !SSL_CTX_set_min_proto_version(threads[th].ssl_ctx, arg_ssl_proto_ver)) {
 			err->len = snprintf(err->msg, err->size, "Failed to set minimal protocol version on SSL context for thread %d\n", th);
 			return -1;
@@ -1981,6 +1989,7 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss,
 			err->len = snprintf(err->msg, err->size, "Failed to set maximal protocol version on SSL context for thread %d\n", th);
 			return -1;
 		}
+# endif
 	}
 #endif
 
@@ -2557,15 +2566,18 @@ int main(int argc, char **argv)
 			arg_ssl_cipher_list = argv[1];
 			argv++; argc--;
 		}
+# ifdef HAVE_SSL_CTX_SET_CIPHERSUITES
 		else if (strcmp(argv[0], "--cipher-suites") == 0) {
 			if (argc < 2)
 				usage(name, 1);
 			arg_ssl_cipher_suites = argv[1];
 			argv++; argc--;
 		}
+# endif
 		else if (strcmp(argv[0], "--tls-reuse") == 0) {
 			arg_ssl_reuse_sess = 1;
 		}
+# if (OPENSSL_VERSION_NUMBER >= 0x1010000fL)
 		else if (strcmp(argv[0], "--tls-ver") == 0) {
 			if (argc < 2)
 				usage(name, 1);
@@ -2583,6 +2595,7 @@ int main(int argc, char **argv)
 				usage(name, 1);
 			argv++; argc--;
 		}
+# endif
 #endif
 		else
 			usage(name, 1);
