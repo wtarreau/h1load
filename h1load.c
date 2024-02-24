@@ -1365,6 +1365,8 @@ void handle_conn(struct thread_ctx *t, struct conn *conn)
 						parsed += conn->to_recv;
 						ret -= conn->to_recv;
 						conn->to_recv = 0;
+						if (!(conn->flags & CF_CHNK))
+							break;
 					}
 				}
 
