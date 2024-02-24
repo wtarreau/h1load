@@ -1413,9 +1413,28 @@ void handle_conn(struct thread_ctx *t, struct conn *conn)
 					}
 					else {
 						switch (c) {
-						case '0' ... '9': c -= '0'; break;
-						case 'A' ... 'A': c -= 'A' - 0xa; break;
-						case 'a' ... 'f': c -= 'a' - 0xa; break;
+						case '0': c = 0; break;
+						case '1': c = 1; break;
+						case '2': c = 2; break;
+						case '3': c = 3; break;
+						case '4': c = 4; break;
+						case '5': c = 5; break;
+						case '6': c = 6; break;
+						case '7': c = 7; break;
+						case '8': c = 8; break;
+						case '9': c = 9; break;
+						case 'A': c = 0xa; break;
+						case 'B': c = 0xb; break;
+						case 'C': c = 0xc; break;
+						case 'D': c = 0xd; break;
+						case 'E': c = 0xe; break;
+						case 'F': c = 0xf; break;
+						case 'a': c = 0xa; break;
+						case 'b': c = 0xb; break;
+						case 'c': c = 0xc; break;
+						case 'd': c = 0xd; break;
+						case 'e': c = 0xe; break;
+						case 'f': c = 0xf; break;
 						default:
 							t->tot_perr++;
 							t->tot_done++;
