@@ -203,7 +203,7 @@ const int zero = 0;
 const int one = 1;
 
 /* default settings */
-const int pollevents = 40;
+const int pollevents = 400;
 const struct linger nolinger = { .l_onoff = 1, .l_linger = 0 };
 
 /* command line arguments */
