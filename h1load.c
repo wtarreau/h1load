@@ -192,7 +192,7 @@ struct thread_ctx {
 	unsigned char *ssl_sess;     // stored ssl session;
 	int ssl_sess_size;           // size of current stored session.
 	int ssl_sess_allocated;      // current allocated size of stored session
-
+	char *host;                  // host name to set in the SNI extension
 #endif
 	__attribute__((aligned(64))) union { } __pad;
 };
@@ -1141,6 +1141,8 @@ void handle_conn(struct thread_ctx *t, struct conn *conn)
 			SSL_set_fd(conn->ssl, conn->fd);
 			SSL_set_ex_data(conn->ssl, 0, t);
 
+			SSL_set_tlsext_host_name(conn->ssl, t->host);
+
 			/* reuse the session if available */
 			if (t->ssl_sess_size) {
 				const unsigned char *ptr = t->ssl_sess;
@@ -1894,6 +1896,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 }
 
 /* converts str in the form [<ipv4>|<ipv6>|<hostname>]:port to struct sockaddr_storage.
+ * Modifies str to point only include the [<ipv4>|<ipv6>|<hostname>] without the provided port on success.
  * Returns < 0 with err set in case of error.
  */
 int addr_to_ss(char *str, struct sockaddr_storage *ss, struct errmsg *err)
@@ -1968,7 +1971,7 @@ static int ssl_sess_new_srv_cb(SSL *ssl, SSL_SESSION *sess)
 /* creates and initializes thread <th>, returns <0 on failure. The initial
  * request is supposed to still be in <buf>.
  */
-int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss, int is_ssl)
+int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss, int is_ssl, char *host)
 {
 	int i;
 
@@ -2035,6 +2038,7 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss,
 			return -1;
 		}
 # endif
+		threads[th].host = host;
 	}
 #endif
 
@@ -2719,7 +2723,7 @@ int main(int argc, char **argv)
 	setlinebuf(stdout);
 
 	for (th = 0; th < arg_thrd; th++) {
-		if (create_thread(th, &err, &ss, is_ssl) < 0) {
+		if (create_thread(th, &err, &ss, is_ssl, host) < 0) {
 			__sync_fetch_and_or(&running, THR_STOP_ALL);
 			die(1, err.msg);
 		}
