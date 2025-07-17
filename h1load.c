@@ -2690,6 +2690,13 @@ int main(int argc, char **argv)
 
 	host = strdup(*argv);
 
+	// If URL is entered with a query string and without a path
+	// (such as http://192.0.2.1?s=1), host will be incorrectly
+	// sent as 192.0.2.1?s=1 which is not valid.
+       if (strchr(host, '?')) {
+		die(1, "'?' found before a '/' (%s). Did you forget the path in url?\n", host);
+       }
+
 	if (arg_url)
 		*arg_url = c;
 	else
