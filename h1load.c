@@ -2202,6 +2202,7 @@ void summary()
 	static uint64_t prev_totc, prev_totr, prev_totb;
 	static uint64_t prev_ttfb, prev_ttlb, prev_fbs, prev_lbs, prev_sc[5];
 	static struct timeval prev_date = TV_UNSET;
+	static uint32_t prev_thr;
 	double interval;
 
 	cur_conn = tot_conn = tot_req = tot_err = tot_rcvd = 0;
@@ -2260,8 +2261,23 @@ void summary()
 		bytes += small_pkt * arg_ovre;
 	}
 
-	if (arg_long >= 2)
-		printf("%3u ", throttle ? mul32hi(100, throttle) : 100);
+	if (arg_long >= 2) {
+		/* throttle: a bit complicated. If not used, it's 100% and we're
+		 * one. But if non-null, we only know the value at the moment we
+		 * display, which does not reflect the average value over the
+		 * period and which is misleading. In this case we'll average it
+		 * with the previous value stored in prev_thr. Throttle is zero
+		 * only if unused, otherwise its range is 1..(2^32-1).
+		 */
+		uint32_t thr = 0;
+
+		if (prev_thr || throttle) {
+			thr = ((uint64_t)(throttle ? throttle : ~0U) + (uint64_t)prev_thr + 1) / 2;
+			prev_thr = throttle;
+		}
+
+		printf("%3u ", thr ? mul32hi(100, thr) : 100);
+	}
 
 	if (arg_long >= 2)
 		printf("%.1f ", (tot_conn - prev_totc) / interval);
