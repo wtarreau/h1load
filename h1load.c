@@ -2268,12 +2268,17 @@ void summary()
 		 * period and which is misleading. In this case we'll average it
 		 * with the previous value stored in prev_thr. Throttle is zero
 		 * only if unused, otherwise its range is 1..(2^32-1).
+		 * We also want to know when the load is stopped and report 0.
 		 */
+		uint32_t curr_thr = throttle;
 		uint32_t thr = 0;
 
-		if (prev_thr || throttle) {
-			thr = ((uint64_t)(throttle ? throttle : ~0U) + (uint64_t)prev_thr + 1) / 2;
-			prev_thr = throttle;
+		if (running & (THR_STOP_ALL|THR_ENDING))
+			curr_thr = 0x1; // lowest value, will report 0.
+
+		if (prev_thr || curr_thr) {
+			thr = ((uint64_t)(curr_thr ? curr_thr : ~0U) + (uint64_t)prev_thr + 1) / 2;
+			prev_thr = curr_thr;
 		}
 
 		printf("%3u ", thr ? mul32hi(100, thr) : 100);
