@@ -2682,8 +2682,11 @@ int main(int argc, char **argv)
 			fprintf(stderr, "Warning: couldn't raise the NOFILE limit to %u\n", (uint32_t)limit.rlim_max);
 	}
 
-	if (arg_thrd > arg_conn)
-	    die(1, "Thread count must not exceed connection count\n");
+	if (arg_thrd > arg_conn) {
+		if (arg_verb)
+			fprintf(stderr, "Warning: limiting thread count to %d to match connection count.\n", arg_conn);
+		arg_thrd = arg_conn;
+	}
 
 	if (!argc)
 		usage(name, 1);
