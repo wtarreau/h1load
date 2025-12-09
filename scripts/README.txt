@@ -31,6 +31,26 @@ The list of columns h1load shows on its output is as follows:
 
     ttfb        - time to first byte, average since last record
 
+There is also a "long long" output format ('-ll'), which is easier to consume
+from scripts because it doesn't use human readable units but full values only.
+It also adds or changes the following columns compared to the '-l' format:
+
+    time        - the system's time, in seconds since epoch, at the moment the
+                  line is printed. It is convenient when collecting values from
+                  multiple systems as it allows to merge measures by date.
+
+    thr         - throttling ratio: indicates the amount of the configured load
+                  that is currently being injected, between 0 and 100%. This is
+                  expected to slowly ramp up from 0 to 100 when '-s' is used.
+                  It will also fall down to zero at the end of the test when a
+                  duration was configured. The value is averaged over the
+                  measurement period, which means that lines showing a value of
+                  100 were measured entirely under nominal conditions and are
+                  usable to perform various other calculations.
+
+All other fields in this format are reported in bits/bytes per second, or
+microseconds for the timings.
+
 h1load client can spawn `n` threads (-t `n` option, only single, when
 no -t provided). When using more than singe thread, then it is important
 to specify -c option (-c `x`, number of concurrent connections) such
