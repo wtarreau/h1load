@@ -227,6 +227,7 @@ int arg_pctl = 0;     // report percentiles.
 int arg_rate = 0;     // connection & request rate limit
 int arg_accu = 0;     // more accurate req/time measurements in keep-alive
 int arg_hscd = 0;     // HTTP status code distribution
+int arg_dbug = 0;     // debug mode
 char *arg_url;
 char *arg_hdr;
 #if defined(USE_SSL)
@@ -1882,6 +1883,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -S                 show HTTP status codes distribution\n"
 	    "  -h                 display this help\n"
 	    "  -v                 increase verbosity\n"
+	    "  --debug            show some debug info (req to be sent etc)\n"
 #if defined(USE_SSL)
 	    "SSL options:\n"
 	    "  --cipher-list <cipher list>                   for TLSv1.2 and below\n"
@@ -2682,6 +2684,8 @@ int main(int argc, char **argv)
 			arg_hscd++;
 		else if (strcmp(argv[0], "-h") == 0)
 			usage(name, 0);
+		else if (strcmp(argv[0], "--debug") == 0)
+			arg_dbug++;
 #if defined(USE_SSL)
 		else if (strcmp(argv[0], "--cipher-list") == 0) {
 			if (argc < 2)
@@ -2805,6 +2809,9 @@ int main(int argc, char **argv)
 	hdr_block = strdup(buf);
 
 	req_len += snprintf(buf + req_len, sizeof(buf) - req_len, "\r\n");
+
+	if (arg_dbug)
+		printf("[DEBUG] will send this request:\n%s%s\n[/DEBUG]\n", start_line, hdr_block);
 
 	if (addr_to_ss(host, &ss, &err) < 0)
 		die(1, err.msg);
