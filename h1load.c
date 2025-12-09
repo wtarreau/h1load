@@ -2201,6 +2201,7 @@ void summary()
 	int th;
 	uint64_t cur_conn, tot_conn, tot_req, tot_err, tot_rcvd, bytes;
 	uint64_t tot_ttfb, tot_ttlb, tot_fbs, tot_lbs, tot_sc[5];
+	uint32_t thr, curr_thr; // throttle
 	static uint64_t prev_totc, prev_totr, prev_totb;
 	static uint64_t prev_ttfb, prev_ttlb, prev_fbs, prev_lbs, prev_sc[5];
 	static struct timeval prev_date = TV_UNSET;
@@ -2263,28 +2264,27 @@ void summary()
 		bytes += small_pkt * arg_ovre;
 	}
 
-	if (arg_long >= 2) {
-		/* throttle: a bit complicated. If not used, it's 100% and we're
-		 * one. But if non-null, we only know the value at the moment we
-		 * display, which does not reflect the average value over the
-		 * period and which is misleading. In this case we'll average it
-		 * with the previous value stored in prev_thr. Throttle is zero
-		 * only if unused, otherwise its range is 1..(2^32-1).
-		 * We also want to know when the load is stopped and report 0.
-		 */
-		uint32_t curr_thr = throttle;
-		uint32_t thr = 0;
+	/* throttle: a bit complicated. If not used, it's 100% and we're
+	 * one. But if non-null, we only know the value at the moment we
+	 * display, which does not reflect the average value over the
+	 * period and which is misleading. In this case we'll average it
+	 * with the previous value stored in prev_thr. Throttle is zero
+	 * only if unused, otherwise its range is 1..(2^32-1).
+	 * We also want to know when the load is stopped and report 0.
+	 */
+	curr_thr = throttle;
+	thr = 0;
 
-		if (running & (THR_STOP_ALL|THR_ENDING))
-			curr_thr = 0x1; // lowest value, will report 0.
+	if (running & (THR_STOP_ALL|THR_ENDING))
+		curr_thr = 0x1; // lowest value, will report 0.
 
-		if (prev_thr || curr_thr) {
-			thr = ((uint64_t)(curr_thr ? curr_thr : ~0U) + (uint64_t)prev_thr + 1) / 2;
-			prev_thr = curr_thr;
-		}
-
-		printf("%3u ", thr ? mul32hi(100, thr) : 100);
+	if (prev_thr || curr_thr) {
+		thr = ((uint64_t)(curr_thr ? curr_thr : ~0U) + (uint64_t)prev_thr + 1) / 2;
+		prev_thr = curr_thr;
 	}
+
+	if (arg_long >= 2)
+		printf("%3u ", thr ? mul32hi(100, thr) : 100);
 
 	if (arg_long >= 2)
 		printf("%.1f ", (tot_conn - prev_totc) / interval);
