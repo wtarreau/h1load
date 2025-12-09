@@ -1867,7 +1867,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 	    "  -n <reqs>          maximum total requests (-1)\n"
 	    "  -r <reqs>          number of requests per connection (-1)\n"
 	    "  -s <time>          soft start: time in sec to reach 100%% load\n"
-	    "  -t <threads>       number of threads to create (1)\n"
+	    "  -t <threads>       number of threads to create (1) ; 0 = auto\n"
 	    "  -w <time>          I/O timeout in milliseconds (-1)\n"
 	    "  -T <time>          think time in ms after a response (0)\n"
 	    "  -R <rate>          limite to this many request attempts per second (0)\n"
@@ -2510,6 +2510,57 @@ void sigint_handler(int sig)
 	signal(SIGINT, SIG_DFL);
 }
 
+/* Counts the number of CPUs the producess is bound to (this works on Linux).
+ * It either returns the number of CPUs or zero if it couldn't determine it.
+ */
+int count_cpus(void)
+{
+	char buf[1024];
+	char *p, *next;
+	int totcpus = 0;
+	FILE *f;
+
+	f = fopen("/proc/self/status", "r");
+	if (!f)
+		return 0;
+
+	/* look for "Cpus_allowed:" */
+	do {
+		if (fgets(buf, sizeof(buf), f) == NULL)
+			goto end;
+	} while (strncmp(buf, "Cpus_allowed:", 13) != 0);
+
+	/* found! */
+	p = buf + 13;
+	while (*p && (*p < '0' || *p > '9') && (*p < 'a' || *p > 'f'))
+		p++;
+
+	/* format: mask,mask,mask... */
+	while (1) {
+		unsigned long mask = strtoul(p, &next, 16);
+
+		if (next == p)
+			break;
+
+		if (*next == 0 || *next == '\n' || *next == ',') {
+			/* simple popcount from https://graphics.stanford.edu/~seander/bithacks.html */
+			mask = mask - ((mask >> 1) & ~0UL/3); // 0x...5555
+			mask = (mask & ~0UL/15*3) + ((mask >> 2) & ~0UL/15*3); // 0x...3333
+			mask = (mask + (mask >> 4)) & ~0UL/255*15; // 0x...0F0F
+			mask = (unsigned long)(mask * (~0UL/255)) >> (sizeof(unsigned long) - 1) * 8; // 0x..0101
+			totcpus += mask;
+		}
+
+		if (*next != ',')
+			break;
+		p = next + 1;
+	}
+
+ end:
+	fclose(f);
+	return totcpus;
+}
+
 int main(int argc, char **argv)
 {
 	const char *name = argv[0];
@@ -2680,6 +2731,15 @@ int main(int argc, char **argv)
 		limit.rlim_cur = limit.rlim_max;
 		if (setrlimit(RLIMIT_NOFILE, &limit) == -1)
 			fprintf(stderr, "Warning: couldn't raise the NOFILE limit to %u\n", (uint32_t)limit.rlim_max);
+	}
+
+	if (arg_thrd <= 0) {
+		/* -t 0 = automatic */
+		arg_thrd = count_cpus();
+		if (!arg_thrd)
+			arg_thrd = 1;
+		else if (arg_thrd > arg_conn)
+			arg_thrd = arg_conn;
 	}
 
 	if (arg_thrd > arg_conn) {
