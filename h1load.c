@@ -688,7 +688,7 @@ static ssize_t recv_raw(struct conn *conn, void *ptr, ssize_t len)
 		return 0;
 	}
 
-	if (ret < len && (conn->flags & CF_HUPR))
+	if (!ret || (ret < len && (conn->flags & CF_HUPR)))
 		conn->flags |= CF_HUPC; // hang up confirmed
 
 	return ret;
@@ -799,6 +799,9 @@ static ssize_t recv_ssl(struct conn *conn, void *ptr, ssize_t len)
 		}
 	}
 
+	/* Note: we can't turn ret==0 to CF_HUPC because it can be a TLS alert
+	 * that's still followed by unread data.
+	 */
 	if (ret < len && (conn->flags & CF_HUPR))
 		conn->flags |= CF_HUPC; // hang up confirmed
 
@@ -1646,9 +1649,34 @@ void handle_conn(struct thread_ctx *t, struct conn *conn)
 		__sync_fetch_and_or(&running, THR_STOP_ALL);
 	t->tot_cerr++;
 
- kill_conn:
-	setsockopt(conn->fd, SOL_SOCKET, SO_LINGER, &nolinger, sizeof(nolinger));
  close_conn:
+	do {
+		size_t len;
+		char *ptr;
+
+		if (conn->flags & (CF_HUPR|CF_HUPC))
+			break;
+
+		/* the connection was not confirmed as read shut yet, we need
+		 * to either drain or abruptly close with a reset. This happens
+		 * particularly when receiving TLS alerts where we can leave
+		 * some unread data pending on the socket. Let's try to drain
+		 * first; for this we try to read up to twice to find the zero.
+		 */
+		len = MSG_TRUNC ? (1U << 30) : sizeof(buf);
+		ptr = MSG_TRUNC ? NULL : buf;
+		ret = recv(conn->fd, ptr, len, MSG_NOSIGNAL | MSG_DONTWAIT | MSG_TRUNC);
+		if (ret)
+			ret = recv(conn->fd, ptr, len, MSG_NOSIGNAL | MSG_DONTWAIT | MSG_TRUNC);
+		if (!ret) {
+			conn->flags |= CF_HUPC; // end finally reached
+			break;
+		}
+
+	kill_conn:
+		setsockopt(conn->fd, SOL_SOCKET, SO_LINGER, &nolinger, sizeof(nolinger));
+	} while (0);
+
 	if (conn->state == CS_END && !(running & THR_DUR_OVER) && (conn->tot_req > 1 || !arg_accu)) {
 		ttlb = tv_us(tv_diff(conn->req_date, t->now));
 		__atomic_store_n(&t->tot_lbs, t->tot_lbs+1, __ATOMIC_RELEASE);
