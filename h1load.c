@@ -1730,6 +1730,12 @@ void *work(void *arg)
 	unshare(CLONE_FILES);
 #endif
 
+	thr->epollfd = epoll_create(1);
+	if (thr->epollfd < 0) {
+		fprintf(stderr, "Failed to initialize epoll_fd for thread %d\n", thr->tid);
+		goto quit;
+	}
+
 	/* pre-allocate all connections to avoid huge delays in libc and/or
 	 * kernel on first allocation.
 	 */
@@ -2118,12 +2124,6 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss,
 			err->len = snprintf(err->msg, err->size, "Failed to allocate percentile counters for thread %d\n", th);
 			return -1;
 		}
-	}
-
-	threads[th].epollfd = epoll_create(1);
-	if (threads[th].epollfd < 0) {
-		err->len = snprintf(err->msg, err->size, "Failed to initialize epoll_fd for thread %d\n", th);
-		return -1;
 	}
 
 	if (pthread_create(&threads[th].pth, NULL, work, &threads[th]) < 0) {
