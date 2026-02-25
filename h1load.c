@@ -1725,6 +1725,11 @@ void *work(void *arg)
 
 	thr = thread;
 
+#if defined(__linux__) && defined(CLONE_FILES)
+	/* make this thread use its own FD table */
+	unshare(CLONE_FILES);
+#endif
+
 	/* pre-allocate all connections to avoid huge delays in libc and/or
 	 * kernel on first allocation.
 	 */
