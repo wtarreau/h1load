@@ -242,6 +242,7 @@ char *arg_hdr;
 char *arg_ssl_cipher_list;   // cipher list for TLSv1.2 and below
 char *arg_ssl_cipher_suites; // cipher suites for TLSv1.3 and above
 char *arg_ssl_ecdh_curves;   // ecdh curves for TLSv1.3 and above
+int arg_ssl_tls_report = 0;  // report addition tls information
 int arg_ssl_proto_ver = -1;  // protocol version to use
 int arg_ssl_reuse_sess = 0;  // reuse session on TLS
 #endif
@@ -1495,8 +1496,41 @@ void handle_conn(struct thread_ctx *t, struct conn *conn)
 				try = 1 << 30;
 
 #if defined(USE_SSL)
-			if (conn->ssl)
+			if (conn->ssl) {
 				ret = recv_ssl(conn, NULL, try);
+				if (arg_ssl_tls_report && (!t->ssl_version) ) {
+					t->ssl_cipher = SSL_CIPHER_standard_name(SSL_get_current_cipher(conn->ssl));
+					t->ssl_version = SSL_get_version(conn->ssl);
+#ifdef OPENSSL_IS_AWSLC
+					const char* group = SSL_get_group_name(SSL_get_group_id(conn->ssl));
+					t->ssl_ecdh_curve = malloc(strlen(group) + 1);
+					if (!t->ssl_ecdh_curve ) {
+						fprintf(stderr, "memory allocation error for tls report\n");
+					} else {
+						strcpy(t->ssl_ecdh_curve, group);
+					}
+#else
+#ifdef WOLFSSL_OPTIONS_H
+					const char* group = wolfSSL_get_curve_name(conn->ssl);
+					t->ssl_ecdh_curve = malloc(strlen(group) + 1);
+					if (!t->ssl_ecdh_curve ) {
+						fprintf(stderr, "memory allocation error for tls report\n");
+					} else {
+						strcpy(t->ssl_ecdh_curve, group);
+					}
+#else
+					long nid = SSL_get_negotiated_group(conn->ssl);
+					int cl = snprintf(NULL, 0, "NID:%ld", nid);
+					t->ssl_ecdh_curve = malloc(cl + 1);
+					if (!t->ssl_ecdh_curve) {
+						fprintf(stderr, "memory allocation error for tls report\n");
+					} else {
+						snprintf(t->ssl_ecdh_curve, cl+1, "NID:%ld", SSL_get_negotiated_group(conn->ssl));
+					}
+#endif
+#endif
+				}
+			}
 			else
 #endif
 				ret = recv_raw(conn, NULL, try);
@@ -1941,6 +1975,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 # ifdef HAVE_SSL_CTX_SET_ECDHCURVES
 	    "  --ecdh-curves <ecdh curves>                   for TLSv1.3 and above\n"
 # endif
+	    "  --tls-report                                  report additional TLS information\n"
 	    "  --tls-reuse                                   enable SSL session reuse\n"
 # if (OPENSSL_VERSION_NUMBER >= 0x1010000fL)
 	    "  --tls-ver SSL3|TLS1.0|TLS1.1|TLS1.2|TLS1.3    force TLS protocol version\n"
@@ -2782,6 +2817,9 @@ int main(int argc, char **argv)
 		argv++; argc--;
 		}
 # endif
+		else if (strcmp(argv[0], "--tls-report") == 0) {
+			arg_ssl_tls_report = 1;
+		}
 		else if (strcmp(argv[0], "--tls-reuse") == 0) {
 			arg_ssl_reuse_sess = 1;
 		}
@@ -3009,5 +3047,9 @@ int main(int argc, char **argv)
 	summary();
 	if (arg_pctl)
 		report_percentiles();
+#if defined(USE_SSL)
+	if (arg_ssl_tls_report)
+		report_tls_info();
+#endif
 	return 0;
 }
