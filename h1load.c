@@ -48,8 +48,13 @@
 #include <unistd.h>
 
 #if defined(USE_SSL)
+#ifdef WOLFSSL_OPTIONS_H
+#include <wolfssl/openssl/err.h>
+#include <wolfssl/openssl/ssl.h>
+#else
 #include <openssl/err.h>
 #include <openssl/ssl.h>
+#endif
 #endif
 
 /* some platforms do not provide PAGE_SIZE */
@@ -192,6 +197,9 @@ struct thread_ctx {
 	unsigned char *ssl_sess;     // stored ssl session;
 	int ssl_sess_size;           // size of current stored session.
 	int ssl_sess_allocated;      // current allocated size of stored session
+	char* ssl_ecdh_curve;        // ecdh curve nid used in session
+	const char* ssl_cipher;      // ssl cipher used in session
+	const char* ssl_version;     // ssl version used
 	char *host;                  // host name to set in the SNI extension
 #endif
 	__attribute__((aligned(64))) union { } __pad;
@@ -233,6 +241,8 @@ char *arg_hdr;
 #if defined(USE_SSL)
 char *arg_ssl_cipher_list;   // cipher list for TLSv1.2 and below
 char *arg_ssl_cipher_suites; // cipher suites for TLSv1.3 and above
+char *arg_ssl_ecdh_curves;   // ecdh curves for TLSv1.3 and above
+int arg_ssl_tls_report = 0;  // report addition tls information
 int arg_ssl_proto_ver = -1;  // protocol version to use
 int arg_ssl_reuse_sess = 0;  // reuse session on TLS
 #endif
@@ -1486,8 +1496,41 @@ void handle_conn(struct thread_ctx *t, struct conn *conn)
 				try = 1 << 30;
 
 #if defined(USE_SSL)
-			if (conn->ssl)
+			if (conn->ssl) {
 				ret = recv_ssl(conn, NULL, try);
+				if (arg_ssl_tls_report && (!t->ssl_version) ) {
+					t->ssl_cipher = SSL_CIPHER_standard_name(SSL_get_current_cipher(conn->ssl));
+					t->ssl_version = SSL_get_version(conn->ssl);
+#ifdef OPENSSL_IS_AWSLC
+					const char* group = SSL_get_group_name(SSL_get_group_id(conn->ssl));
+					t->ssl_ecdh_curve = malloc(strlen(group) + 1);
+					if (!t->ssl_ecdh_curve ) {
+						fprintf(stderr, "memory allocation error for tls report\n");
+					} else {
+						strcpy(t->ssl_ecdh_curve, group);
+					}
+#else
+#ifdef WOLFSSL_OPTIONS_H
+					const char* group = wolfSSL_get_curve_name(conn->ssl);
+					t->ssl_ecdh_curve = malloc(strlen(group) + 1);
+					if (!t->ssl_ecdh_curve ) {
+						fprintf(stderr, "memory allocation error for tls report\n");
+					} else {
+						strcpy(t->ssl_ecdh_curve, group);
+					}
+#else
+					long nid = SSL_get_negotiated_group(conn->ssl);
+					int cl = snprintf(NULL, 0, "NID:%ld", nid);
+					t->ssl_ecdh_curve = malloc(cl + 1);
+					if (!t->ssl_ecdh_curve) {
+						fprintf(stderr, "memory allocation error for tls report\n");
+					} else {
+						snprintf(t->ssl_ecdh_curve, cl+1, "NID:%ld", SSL_get_negotiated_group(conn->ssl));
+					}
+#endif
+#endif
+				}
+			}
 			else
 #endif
 				ret = recv_raw(conn, NULL, try);
@@ -1929,6 +1972,10 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 # ifdef HAVE_SSL_CTX_SET_CIPHERSUITES
 	    "  --cipher-suites <cipher suites>               for TLSv1.3 and above\n"
 # endif
+# ifdef HAVE_SSL_CTX_SET_ECDHCURVES
+	    "  --ecdh-curves <ecdh curves>                   for TLSv1.3 and above\n"
+# endif
+	    "  --tls-report                                  report additional TLS information\n"
 	    "  --tls-reuse                                   enable SSL session reuse\n"
 # if (OPENSSL_VERSION_NUMBER >= 0x1010000fL)
 	    "  --tls-ver SSL3|TLS1.0|TLS1.1|TLS1.2|TLS1.3    force TLS protocol version\n"
@@ -2068,6 +2115,17 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss,
 		if (arg_ssl_cipher_suites && !SSL_CTX_set_ciphersuites(threads[th].ssl_ctx, arg_ssl_cipher_suites)) {
 			err->len = snprintf(err->msg, err->size, "Failed to set cipher suites on SSL context for thread %d\n", th);
 			return -1;
+		}
+# endif
+
+# ifdef HAVE_SSL_CTX_SET_ECDHCURVES
+		if (arg_ssl_ecdh_curves) {
+			int ok;
+			ok = SSL_CTX_set1_groups_list(threads[th].ssl_ctx, arg_ssl_ecdh_curves);
+			if (!ok) {
+				err->len = snprintf(err->msg, err->size, "Failed to set ecdh curves on SSL context for thread %d - Err: %d\n", th, ok);
+				return -1;
+			}
 		}
 # endif
 
@@ -2449,6 +2507,23 @@ void report_percentiles()
 	}
 }
 
+#if defined(USE_SSL)
+/* report addition TLS information */
+void report_tls_info()
+{
+	int t;
+	for (t = 0; t < arg_thrd; t++) {
+		if (threads[t].ssl_version != NULL)
+		break;
+	}
+	printf("#======= TLS Information [Thread %d] =======\n", t);
+	printf("TLS_Version: %s\n", threads[t].ssl_version);
+	printf("TLS_Cipher: %s\n", threads[t].ssl_cipher);
+	printf("TLS_Curve: %s\n", threads[t].ssl_ecdh_curve);
+}
+#endif
+
+
 /* appends <txt1>, <txt2> and <txt3> to pfx when not NULL. <str> may also be
  * NULL, in this case it will be allocated first. If everything is empty, an
  * empty string will still be returned. NULL is returned on allocation error.
@@ -2734,6 +2809,17 @@ int main(int argc, char **argv)
 			argv++; argc--;
 		}
 # endif
+# ifdef HAVE_SSL_CTX_SET_ECDHCURVES
+		else if (strcmp(argv[0], "--ecdh-curves") == 0) {
+		if (argc < 2)
+			usage(name, 1);
+		arg_ssl_ecdh_curves = argv[1];
+		argv++; argc--;
+		}
+# endif
+		else if (strcmp(argv[0], "--tls-report") == 0) {
+			arg_ssl_tls_report = 1;
+		}
 		else if (strcmp(argv[0], "--tls-reuse") == 0) {
 			arg_ssl_reuse_sess = 1;
 		}
@@ -2961,5 +3047,9 @@ int main(int argc, char **argv)
 	summary();
 	if (arg_pctl)
 		report_percentiles();
+#if defined(USE_SSL)
+	if (arg_ssl_tls_report)
+		report_tls_info();
+#endif
 	return 0;
 }

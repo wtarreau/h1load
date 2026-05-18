@@ -59,6 +59,13 @@ Building on Linux with the wolfSSL library installed in $HOME/local:
 make SSL_CFLAGS="-I$HOME/local/include/wolfssl -I$HOME/local/include -include $HOME/local/include/wolfssl/options.h" SSL_LFLAGS="-L$HOME/local/lib -lwolfssl -Wl,-rpath=$HOME/local/lib"
 ```
 
+Building on Linux with the aws-lc library installed in /opt/aws-lc:
+```
+make USR_CFLAGS="-DUSE_SSL=1 -DHAVE_SSL_CTX_SET_CIPHERSUITES=1 -DHAVE_SSL_CTX_SET_ECDHCURVES=1" \
+    SSL_CFLAGS="-I/opt/aws-lc/include" \
+    SSL_LFLAGS="-Wl,-rpath,/opt/aws-lc/lib/,--no-as-needed -L/opt/aws-lc/lib -lcrypto -lssl"
+```
+
 Building on FreeBSD with epoll-shim:
 ```
 gmake USR_CFLAGS="-I/usr/local/include/libepoll-shim" USR_LFLAGS="-L/usr/local/lib -lepoll-shim"
