@@ -233,6 +233,7 @@ char *arg_hdr;
 #if defined(USE_SSL)
 char *arg_ssl_cipher_list;   // cipher list for TLSv1.2 and below
 char *arg_ssl_cipher_suites; // cipher suites for TLSv1.3 and above
+char *arg_ssl_curves;        // curves/groups for key exchange (e.g. X25519MLKEM768:X25519)
 int arg_ssl_proto_ver = -1;  // protocol version to use
 int arg_ssl_reuse_sess = 0;  // reuse session on TLS
 #endif
@@ -1929,6 +1930,7 @@ __attribute__((noreturn)) void usage(const char *name, int code)
 # ifdef HAVE_SSL_CTX_SET_CIPHERSUITES
 	    "  --cipher-suites <cipher suites>               for TLSv1.3 and above\n"
 # endif
+	    "  --curves <curves>                             curves/groups (e.g. X25519MLKEM768:X25519)\n"
 	    "  --tls-reuse                                   enable SSL session reuse\n"
 # if (OPENSSL_VERSION_NUMBER >= 0x1010000fL)
 	    "  --tls-ver SSL3|TLS1.0|TLS1.1|TLS1.2|TLS1.3    force TLS protocol version\n"
@@ -2061,6 +2063,11 @@ int create_thread(int th, struct errmsg *err, const struct sockaddr_storage *ss,
 
 		if (arg_ssl_cipher_list && !SSL_CTX_set_cipher_list(threads[th].ssl_ctx, arg_ssl_cipher_list)) {
 			err->len = snprintf(err->msg, err->size, "Failed to set cipher list on SSL context for thread %d\n", th);
+			return -1;
+		}
+
+		if (arg_ssl_curves && !SSL_CTX_set1_curves_list(threads[th].ssl_ctx, arg_ssl_curves)) {
+			err->len = snprintf(err->msg, err->size, "Failed to set curves list on SSL context for thread %d\n", th);
 			return -1;
 		}
 
@@ -2734,6 +2741,12 @@ int main(int argc, char **argv)
 			argv++; argc--;
 		}
 # endif
+		else if (strcmp(argv[0], "--curves") == 0) {
+			if (argc < 2)
+				usage(name, 1);
+			arg_ssl_curves = argv[1];
+			argv++; argc--;
+		}
 		else if (strcmp(argv[0], "--tls-reuse") == 0) {
 			arg_ssl_reuse_sess = 1;
 		}
