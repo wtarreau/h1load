@@ -2974,5 +2974,14 @@ int main(int argc, char **argv)
 	summary();
 	if (arg_pctl)
 		report_percentiles();
+
+	/* Exit codes:
+	 *   0: normal exit (test duration elapsed or request quota reached)
+	 *   1: fatal error before or during initialization (bad arguments,
+	 *      thread creation failure, memory allocation error, etc.)
+	 *   2: test interrupted by an error detected during the run (see -e)
+	 */
+	if (running & THR_STOP_ALL)
+		return 2;
 	return 0;
 }

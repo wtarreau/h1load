@@ -182,4 +182,15 @@ requested connections will be allocatable. Please use "ulimit -n" to raise the
 value if needed. If not running as root, using "sudo prlimit -nXXX -p$$" can
 do the job on Linux.
 
+## Exit codes
+
+h1load uses the following exit codes:
+
+- **0**: normal exit — the test completed as expected (duration elapsed or
+  request quota reached)
+- **1**: fatal error before or during initialization — bad arguments, thread
+  creation failure, memory allocation error, SSL not compiled in, etc.
+- **2**: test interrupted by an error detected during the run — only possible
+  when using `-e` (stop on first error)
+
 
